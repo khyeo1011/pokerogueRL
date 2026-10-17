@@ -1,0 +1,92 @@
+{
+  "runs": 300,
+  "outcomes": {
+    "terminated": 300
+  },
+  "truncationReasons": {},
+  "truncated": [],
+  "errors": [],
+  "wave": {
+    "min": 3,
+    "median": 9.0,
+    "mean": 13.4,
+    "max": 55
+  },
+  "turns": {
+    "min": 10,
+    "median": 30.0,
+    "mean": 37.4,
+    "max": 110
+  },
+  "maxWaveTurns": 22,
+  "maxPhasesPerNext": 62,
+  "decisions": {
+    "min": 21,
+    "median": 58.0,
+    "mean": 82.1,
+    "max": 322
+  },
+  "wallMs": {
+    "min": 73,
+    "median": 245.0,
+    "mean": 347.2,
+    "max": 1324
+  },
+  "bootMs": {
+    "min": 102,
+    "median": 104.0,
+    "mean": 116.6,
+    "max": 594
+  },
+  "mysteryEncounters": 77,
+  "mysteryEncounterTypes": {
+    "TRAINING_SESSION": 13,
+    "GLOBAL_TRADE_SYSTEM": 10,
+    "UNCOMMON_BREED": 8,
+    "DEPARTMENT_STORE_SALE": 7,
+    "MYSTERIOUS_CHEST": 6,
+    "MYSTERIOUS_CHALLENGERS": 6,
+    "FUN_AND_GAMES": 6,
+    "PART_TIMER": 5,
+    "BERRIES_ABOUND": 4,
+    "DELIBIRDY": 3,
+    "FIGHT_OR_FLIGHT": 2,
+    "SHADY_VITAMIN_DEALER": 2,
+    "SLUMBERING_SNORLAX": 2,
+    "TELEPORTING_HIJINKS": 1,
+    "THE_POKEMON_SALESMAN": 1,
+    "SAFARI_ZONE": 1
+  },
+  "perWorker": {
+    "gamesPerHour": 7762,
+    "turnsPerSecond": 80.5,
+    "decisionsPerSecond": 177.1,
+    "playTurnsPerSecond": 107.6,
+    "playDecisionsPerSecond": 236.6
+  },
+  "level": 0,
+  "processes": 8,
+  "chunks": 8,
+  "exitCodes": {
+    "0": 8
+  },
+  "elapsedS": 26.0,
+  "runsPerMinute": 692.1,
+  "betweenRunsMs": {
+    "min": 0,
+    "median": 1.0,
+    "mean": 0.6,
+    "max": 2
+  },
+  "processStartupS": {
+    "min": 4.91,
+    "median": 5.345,
+    "mean": 5.2,
+    "max": 5.41
+  },
+  "aggregate": {
+    "gamesPerHour": 41526,
+    "turnsPerSecond": 430.9,
+    "decisionsPerSecond": 947.3
+  }
+}
