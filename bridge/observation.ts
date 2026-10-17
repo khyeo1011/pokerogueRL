@@ -30,9 +30,11 @@
 // |                 |                                          | HP bar fraction, boss segments, status,      |
 // |                 |                                          | stat stages, visible battler tags, held      |
 // |                 |                                          | items, moves and abilities revealed so far   |
-// | stage           | the screen asking for input              | command/target/switch: field slot (+ move);  |
-// |                 |                                          | reward: options, shop, reroll cost;          |
-// |                 |                                          | learnMove: party slot, new move;             |
+// | stage           | the screen asking for input              | command/target/switch/checkSwitch: field     |
+// |                 |                                          | slot (+ move); reward: options, shop, reroll |
+// |                 |                                          | cost; itemTarget: the item picked;           |
+// |                 |                                          | learnMove: party slot, new move; evolution:  |
+// |                 |                                          | party slot, new species; revive: nothing;    |
 // |                 |                                          | biome: choices; mysteryEncounter: type,      |
 // |                 |                                          | tier, options; catch: the caught Pokémon     |
 //
@@ -49,6 +51,7 @@ import { BattlerTagType } from "#enums/battler-tag-type";
 import type { BiomeId } from "#enums/biome-id";
 import type { MoveId } from "#enums/move-id";
 import { MysteryEncounterOptionMode } from "#enums/mystery-encounter-option-mode";
+import type { SpeciesId } from "#enums/species-id";
 import { PERMANENT_STATS } from "#enums/stat";
 import type { EnemyPokemon, Pokemon } from "#field/pokemon";
 import {
@@ -239,8 +242,12 @@ export type StageObs =
   | { kind: "command"; fieldIndex: number }
   | { kind: "target"; fieldIndex: number; moveId: number }
   | { kind: "switch"; fieldIndex: number }
+  | { kind: "checkSwitch"; fieldIndex: number }
   | { kind: "reward"; options: RewardOptionObs[]; shop: RewardOptionObs[]; rerollCost: number }
+  | { kind: "itemTarget"; item: Pick<ItemObs, "id" | "args"> }
   | { kind: "learnMove"; partySlot: number; moveId: number }
+  | { kind: "evolution"; partySlot: number; speciesId: number }
+  | { kind: "revive" }
   | { kind: "biome"; choices: number[] }
   | { kind: "mysteryEncounter"; encounterType: number; tier: number; options: MysteryEncounterOptionObs[] }
   | { kind: "catch"; pokemon: OwnPokemonObs };
@@ -262,10 +269,18 @@ export type StageInput =
   | { kind: "command"; fieldIndex: number }
   | { kind: "target"; fieldIndex: number; moveId: MoveId }
   | { kind: "switch"; fieldIndex: number }
+  /** CheckSwitchPhase's field slot ("Will you switch Pokémon?"). */
+  | { kind: "checkSwitch"; fieldIndex: number }
   /** MODIFIER_SELECT mode args: `options` is args[1], `rerollCost` args[3]. */
   | { kind: "reward"; options: readonly ModifierTypeOption[]; rerollCost: number }
+  /** The reward or shop item picked on the reward screen, whose party screen is open. */
+  | { kind: "itemTarget"; type: ModifierType }
   /** LearnMovePhase's party slot and move (the SUMMARY mode in LEARN_MOVE gets the move as args[2]). */
   | { kind: "learnMove"; partySlot: number; moveId: MoveId }
+  /** EvolutionPhase's Pokémon (as a party slot) and the species it evolves into. */
+  | { kind: "evolution"; partySlot: number; speciesId: SpeciesId }
+  /** RevivalBlessingPhase's party screen. */
+  | { kind: "revive" }
   /** SelectBiomePhase's choices, in the order of the OPTION_SELECT labels. */
   | { kind: "biome"; choices: readonly BiomeId[] }
   /**
@@ -365,6 +380,7 @@ function buildStage(scene: BattleScene, input: StageInput): StageObs {
   switch (input.kind) {
     case "command":
     case "switch":
+    case "checkSwitch":
       return { kind: input.kind, fieldIndex: input.fieldIndex };
     case "target":
       return { kind: "target", fieldIndex: input.fieldIndex, moveId: input.moveId };
@@ -375,8 +391,14 @@ function buildStage(scene: BattleScene, input: StageInput): StageObs {
         shop: shopOptions(scene).map(rewardOption),
         rerollCost: input.rerollCost,
       };
+    case "itemTarget":
+      return { kind: "itemTarget", item: { id: typeId(input.type), args: typeArgs(input.type) } };
     case "learnMove":
       return { kind: "learnMove", partySlot: input.partySlot, moveId: input.moveId };
+    case "evolution":
+      return { kind: "evolution", partySlot: input.partySlot, speciesId: input.speciesId };
+    case "revive":
+      return { kind: "revive" };
     case "biome":
       return { kind: "biome", choices: [...input.choices] };
     case "mysteryEncounter": {
