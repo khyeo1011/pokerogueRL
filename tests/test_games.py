@@ -29,7 +29,7 @@ for n in range(start, start + count):
 """
 
 
-def fake_launch(prefix, start, count, out, log):
+def fake_launch(prefix, start, count, level, out, log):
     cmd = [sys.executable, "-c", FAKE_RUNNER, prefix, str(start), str(count), str(out)]
     return subprocess.Popen(cmd)
 
@@ -63,3 +63,27 @@ def test_stuck_run_is_lost_and_the_chunk_goes_on(tmp_path, monkeypatch):
     assert summary["wave"] == {"min": 0, "median": 3.0, "mean": 3.0, "max": 6}
     assert summary["mysteryEncounterTypes"] == {"SAFARI_ZONE": 1}
     assert summary["chunks"] == 2
+
+
+def test_throughput():
+    records = [
+        {"bootMs": 100, "wallMs": 900, "turns": 20, "decisions": 50, "startedAt": 0},
+        {
+            "bootMs": 100,
+            "wallMs": 1900,
+            "turns": 40,
+            "decisions": 100,
+            "startedAt": 1010,
+        },
+    ]
+    assert games.throughput(records) == {
+        "gamesPerHour": 2400,
+        "turnsPerSecond": 20.0,
+        "decisionsPerSecond": 50.0,
+        "playTurnsPerSecond": 21.4,
+        "playDecisionsPerSecond": 53.6,
+    }
+    assert games.throughput([]) == {}
+    # A lost run (no startedAt) breaks the sequence.
+    assert games.between_runs(records) == [10]
+    assert games.between_runs([records[0], {"outcome": "lost"}, records[1]]) == []
