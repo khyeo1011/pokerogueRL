@@ -8,11 +8,15 @@ import { GameManager } from "#test/framework/game-manager";
 import Phaser from "phaser";
 import { beforeAll, describe, expect, it } from "vitest";
 import { type Action, type Decision, Driver } from "../driver";
+import { defaultAction } from "../policy";
 
 const WAVES = 10;
 const TURN_BUDGET = 150;
 
-/** Highest-power usable move on the first active enemy; first healthy bench Pokémon; never take rewards. */
+/**
+ * Highest-power usable move on the first active enemy; first healthy bench Pokémon; never take rewards.
+ * Other decisions get the default policy.
+ */
 function policy(game: GameManager, decision: Exclude<Decision, { kind: "gameOver" }>): Action {
   const scene = game.scene;
   switch (decision.kind) {
@@ -32,6 +36,8 @@ function policy(game: GameManager, decision: Exclude<Decision, { kind: "gameOver
     }
     case "reward":
       return { kind: "skipReward" };
+    default:
+      return defaultAction(scene, decision);
   }
 }
 

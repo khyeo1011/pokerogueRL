@@ -1,0 +1,92 @@
+// Full Classic runs through the driver: each must reach game over or a win without getting stuck at any
+// screen (issue #7). Mystery encounters are turned off until the driver handles them (issue #8).
+//   - The real game (startClassicRun) with the default policy (bridge/policy.ts).
+//   - Starters at level 100, to reach later waves and their screens (biome forks, evolutions, trainers,
+//     doubles), with the default policy and with a seeded random policy. The random one picks any legal
+//     action, so it also exercises balls, running, switching, the shop, rerolls, releases and cancels.
+// Run with scripts/test_bridge.sh full-run.
+
+import { BattleStyle } from "#enums/battle-style";
+import { SpeciesId } from "#enums/species-id";
+import { GameManager } from "#test/framework/game-manager";
+import Phaser from "phaser";
+import { beforeAll, describe, expect, it } from "vitest";
+import { type Action, type Decision, Driver } from "../driver";
+import { defaultAction } from "../policy";
+import { startClassicRun } from "../run";
+import { nextDecision } from "./play";
+
+/** Battle styles alternate: Switch (the game's default) asks checkSwitch every wave. */
+const RUNS = [
+  { seed: "full-1", style: BattleStyle.SET, level: 0, policy: "default" },
+  { seed: "full-2", style: BattleStyle.SWITCH, level: 0, policy: "default" },
+  { seed: "full-3", style: BattleStyle.SET, level: 0, policy: "default" },
+  { seed: "full-4", style: BattleStyle.SWITCH, level: 0, policy: "default" },
+  { seed: "full-5", style: BattleStyle.SET, level: 100, policy: "default" },
+  { seed: "full-6", style: BattleStyle.SWITCH, level: 100, policy: "default" },
+  { seed: "full-7", style: BattleStyle.SET, level: 100, policy: "random" },
+  { seed: "full-8", style: BattleStyle.SWITCH, level: 100, policy: "random" },
+] as const;
+
+/** Ends a stalemate (e.g. both sides at -6 accuracy). Not reached so far. */
+const TURN_BUDGET = 5000;
+
+/** A random policy seeded from a string (a small LCG, so runs are repeatable). */
+function randomPolicy(seed: string): (decision: Decision) => Action {
+  let state = [...seed].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
+  return decision => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return decision.legal[state % decision.legal.length];
+  };
+}
+
+describe("Classic run through the driver", () => {
+  let phaserGame: Phaser.Game;
+
+  beforeAll(() => {
+    phaserGame = new Phaser.Game({ type: Phaser.HEADLESS });
+  });
+
+  it.each(RUNS)(
+    "$seed: $policy policy, starters at level $level (0: real game)",
+    { timeout: 300_000 },
+    async ({ seed, style, level, policy }) => {
+      const game = new GameManager(phaserGame);
+      game.settings.battleStyle(style);
+      if (level > 0) {
+        game.override.startingLevel(level);
+      }
+      await startClassicRun(game, seed, SpeciesId.CHARMANDER, SpeciesId.SQUIRTLE, SpeciesId.BULBASAUR);
+      game.override.mysteryEncounterChance(0);
+      const driver = new Driver(game);
+      const random = randomPolicy(seed);
+      const choose = (d: Exclude<Decision, { kind: "gameOver" }>) =>
+        policy === "random" ? random(d) : defaultAction(game.scene, d);
+      const t0 = performance.now();
+
+      const counts: Partial<Record<Decision["kind"], number>> = {};
+      let decision: Decision;
+      for (;;) {
+        decision = await nextDecision(game, driver);
+        counts[decision.kind] = (counts[decision.kind] ?? 0) + 1;
+        if (decision.kind === "gameOver" || driver.turns >= TURN_BUDGET) {
+          break;
+        }
+        driver.act(choose(decision));
+      }
+
+      const seconds = (performance.now() - t0) / 1000;
+      const end = decision.kind === "gameOver" ? (decision.victory ? "won" : "game over") : "turn budget ran out";
+      const party = game.scene
+        .getPlayerParty()
+        .map(p => `${p.name} L${p.level}`)
+        .join(", ");
+      console.info(
+        `\n=== ${seed} (${policy} policy, level ${level || "real"}, ${BattleStyle[style]}) ===\n`
+          + `${end} on wave ${game.scene.currentBattle.waveIndex}; ${driver.turns} turns in ${seconds.toFixed(1)}s\n`
+          + `party: ${party}\ndecisions: ${JSON.stringify(counts)}\n`,
+      );
+      expect(decision.kind).toBe("gameOver");
+    },
+  );
+});
