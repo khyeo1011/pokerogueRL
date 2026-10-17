@@ -59,5 +59,4 @@ Disjoint seeds don't give disjoint teams. 84 of the teams for `eval-0` .. `eval-
 as a set of species, among the 100,000 training teams. They're small teams built around an expensive
 starter: 79 of the 84 have one or two Pokémon, and 83 hold a starter costing 6 or more. There are few
 such teams. One cost-10 starter on its own is a single team, and a cost-9 starter plus a cost-1 starter
-is one of 260. A strict held-out set
-needs to drop teams that training has seen. Nothing does that yet.
+is one of 260. A strict held-out set needs to drop teams that training has seen. Nothing does that yet.
