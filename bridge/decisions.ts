@@ -16,6 +16,9 @@ import { BiomeId } from "#enums/biome-id";
 import { Command } from "#enums/command";
 import type { MoveId } from "#enums/move-id";
 import { MysteryEncounterMode } from "#enums/mystery-encounter-mode";
+import { MysteryEncounterOptionMode } from "#enums/mystery-encounter-option-mode";
+import type { MysteryEncounterTier } from "#enums/mystery-encounter-tier";
+import type { MysteryEncounterType } from "#enums/mystery-encounter-type";
 import { PartyUiMode } from "#enums/party-ui-mode";
 import { PokeballType } from "#enums/pokeball";
 import type { SpeciesId } from "#enums/species-id";
@@ -31,6 +34,8 @@ import {
   TmModifierType,
 } from "#modifiers/modifier-type";
 import { getMoveTargets } from "#moves/move-utils";
+import { getEncounterText } from "#mystery-encounters/encounter-dialogue-utils";
+import type { MysteryEncounterOption } from "#mystery-encounters/mystery-encounter-option";
 import type { PokemonMoveSelectFilter, PokemonSelectFilter } from "#ui/party-ui-handler";
 import { getBiomeName, NumberHolder } from "#utils/common";
 import { canTerastallize } from "#utils/pokemon-utils";
@@ -66,7 +71,13 @@ export type Action =
   | { kind: "release"; partySlot: number }
   | { kind: "keepParty" }
   // revive (Revival Blessing)
-  | { kind: "revive"; partySlot: number };
+  | { kind: "revive"; partySlot: number }
+  // mysteryEncounter: an option of the encounter's menu, by index in `options`
+  | { kind: "meOption"; index: number }
+  // mePokemon: the Pokémon an encounter option asks for
+  | { kind: "mePokemon"; partySlot: number }
+  // meSubOption: an entry of a follow-up menu, by index in `labels`
+  | { kind: "meSubOption"; index: number };
 
 /** The actions of the given kinds. */
 export type ActionOf<K extends Action["kind"]> = Extract<Action, { kind: K }>;
@@ -76,6 +87,19 @@ export interface ShopItem {
   /** Modifier type id, e.g. `"POTION"`. */
   item: string;
   cost: number;
+}
+
+/** An option of a mystery encounter's menu, as the menu shows it. */
+export interface MeOption {
+  /** Localization key of the button label. */
+  labelKey: string;
+  /** The label and the tooltip, with the encounter's tokens filled in and text styling removed. */
+  label: string;
+  tooltip: string;
+  /** Greyed out: its requirements are not met and it can't be picked. */
+  disabled: boolean;
+  /** Shown in the "special" colour: it has requirements and they are met. */
+  special: boolean;
 }
 
 /** A point where the game waits for the player, with every action the game would accept there. */
@@ -109,6 +133,30 @@ export type Decision =
   | { kind: "partyFull"; speciesId: SpeciesId; legal: ActionOf<"release" | "keepParty">[] }
   /** Revival Blessing: choose a fainted party member to revive. */
   | { kind: "revive"; legal: ActionOf<"revive">[] }
+  /**
+   * A mystery encounter's option menu. The texts are what the screen shows (intro messages, then the
+   * description box and the options); `followUp` is a later menu of the same encounter (e.g. the Safari
+   * Zone's turns). Nothing about an option's outcome is included.
+   */
+  | {
+      kind: "mysteryEncounter";
+      encounterType: MysteryEncounterType;
+      tier: MysteryEncounterTier;
+      followUp: boolean;
+      intro: string[];
+      title: string;
+      description: string;
+      query: string;
+      options: MeOption[];
+      legal: ActionOf<"meOption">[];
+    }
+  /** The party screen an encounter option opens to choose a Pokémon. */
+  | { kind: "mePokemon"; encounterType: MysteryEncounterType; legal: ActionOf<"mePokemon">[] }
+  /**
+   * A follow-up menu inside a mystery encounter: a second choice after picking a Pokémon (e.g. which held
+   * item), a menu before picking one (e.g. which move to learn, with "Cancel" to decline), or a yes/no prompt.
+   */
+  | { kind: "meSubOption"; encounterType: MysteryEncounterType; labels: string[]; legal: ActionOf<"meSubOption">[] }
   /** The run is over (`GameOverPhase` is next). Nothing is legal. */
   | { kind: "gameOver"; victory: boolean; legal: never[] };
 
@@ -358,6 +406,63 @@ export function partyFullActions(): ActionOf<"release" | "keepParty">[] {
 export function reviveActions(): ActionOf<"revive">[] {
   const party = globalScene.getPlayerParty();
   return party.map((_, i) => i).filter(i => party[i].isFainted()).map(partySlot => ({ kind: "revive", partySlot }));
+}
+
+// #endregion
+// #region mystery encounters
+
+/**
+ * An encounter text with its tokens filled in, as the screen shows it, without markup: `@[STYLE]{...}`
+ * colours, `@d{...}`-style message actions, and `$` page breaks (made line breaks).
+ */
+export function encounterText(key: string | undefined): string {
+  return (getEncounterText(key) ?? "")
+    .replace(/@\[[A-Z_]+\]\{([^}]*)\}/g, "$1")
+    .replace(/@[cdsf]\{.*?\}/g, "")
+    .replace(/\$/g, "\n");
+}
+
+/** Whether the encounter menu greys out an option, as `MysteryEncounterUiHandler` does. */
+function isDisabled(option: MysteryEncounterOption, meetsReqs: boolean): boolean {
+  return (
+    !meetsReqs
+    && (option.optionMode === MysteryEncounterOptionMode.DISABLED_OR_DEFAULT
+      || option.optionMode === MysteryEncounterOptionMode.DISABLED_OR_SPECIAL)
+  );
+}
+
+/**
+ * The options of an encounter menu as `MysteryEncounterUiHandler.displayEncounterOptions` and
+ * `displayOptionTooltip` show them. `meetsReqs` is the handler's own `optionsMeetsReqs`: calling
+ * `meetsRequirements()` again would draw from the RNG.
+ */
+export function meOptions(options: MysteryEncounterOption[], meetsReqs: boolean[]): MeOption[] {
+  return options.map((option, i) => {
+    const dialogue = option.dialogue!;
+    const disabled = isDisabled(option, meetsReqs[i]);
+    const labelKey = !meetsReqs[i] && dialogue.disabledButtonLabel ? dialogue.disabledButtonLabel : dialogue.buttonLabel;
+    const tooltipKey = disabled && dialogue.disabledButtonTooltip ? dialogue.disabledButtonTooltip : dialogue.buttonTooltip;
+    const special =
+      option.hasRequirements()
+      && meetsReqs[i]
+      && (option.optionMode === MysteryEncounterOptionMode.DEFAULT_OR_SPECIAL
+        || option.optionMode === MysteryEncounterOptionMode.DISABLED_OR_SPECIAL);
+    return { labelKey, label: encounterText(labelKey), tooltip: encounterText(tooltipKey), disabled, special };
+  });
+}
+
+/** Legal actions for {@linkcode Decision} `mysteryEncounter`: every option not greyed out. */
+export function meOptionActions(options: MeOption[]): ActionOf<"meOption">[] {
+  return options.flatMap((option, index) => (option.disabled ? [] : [{ kind: "meOption" as const, index }]));
+}
+
+/** Legal actions for {@linkcode Decision} `mePokemon`: party slots passing the party screen's filter. */
+export function mePokemonActions(selectFilter: PokemonSelectFilter | undefined): ActionOf<"mePokemon">[] {
+  const party = globalScene.getPlayerParty();
+  return party
+    .map((_, i) => i)
+    .filter(i => (selectFilter?.(party[i]) ?? null) === null)
+    .map(partySlot => ({ kind: "mePokemon", partySlot }));
 }
 
 // #endregion
