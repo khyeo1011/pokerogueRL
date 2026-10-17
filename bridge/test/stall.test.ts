@@ -1,8 +1,8 @@
 // Stall detection (issue #9): runs that can't finish end as a `truncated` decision with a stall report,
 // logged as one JSON line, and the next run in the same process plays normally. Each stall is made on
 // purpose: a phase that never ends, a phase loop with no decisions, a screen answered the same way forever,
-// a stalemate that only a turn cap ends, and game code that throws (on purpose and in a real run). Also
-// the double-battle flee that used to crash the harness now plays on.
+// a stalemate that only a turn cap ends, and game code that throws. Also two runs that used to stall or
+// crash and now play to the end.
 // Run with scripts/test_bridge.sh stall.
 
 import { globalScene } from "#app/global-scene";
@@ -188,6 +188,19 @@ describe("stall detection", () => {
       stall: { wave: 7, phase: "SwitchSummonPhase", lastDecision: "switch" },
     });
     expect(decision.kind === "truncated" && decision.stall.detail).toMatch(/getAbilityPriorities/);
+    driver.dispose();
+  });
+
+  // This run's lead could only remember Bide, which is unimplemented: picking it with the Memory Mushroom
+  // brought the reward screen back unchanged, and the default policy picked it forever (a noProgress
+  // truncation). Unimplemented moves are no longer legal targets (bridge/decisions.ts).
+  it("doesn't loop on a Memory Mushroom with only an unimplemented move", async () => {
+    const seed = "big-1547";
+    const game = new GameManager(phaserGame);
+    await startClassicRun(game, seed, ...randomTeam(seed));
+    const driver = new Driver(game);
+    const { decision } = await play(driver);
+    expect(decision.kind).toBe("gameOver");
     driver.dispose();
   });
 
