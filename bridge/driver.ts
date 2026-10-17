@@ -23,8 +23,23 @@
 // built from what the UI mode passed, and observe() turns it into the fair-information observation
 // (bridge/observation.ts) with the driver's RevealTracker. A policy gets only that observation and the
 // legal actions, never the scene. A new decision point passes its StageInput to raise() like the others.
+//
+// Stalls (issue #9) end the run as a `truncated` decision instead of hanging or throwing, so a batch of
+// environments never waits on one game. The watchdogs, with their limits in StallLimits:
+//   - noProgress: too many phases and decisions with no turn end and no new wave (a phase loop, or the same
+//     screen answered the same way forever). Checked between phases, since such a loop may never yield
+//     to the event loop.
+//   - phaseTimeout: one phase running too long in wall-clock time (a phase waiting on something the
+//     driver doesn't see). Checked between phases and by a timer while next() awaits a phase.
+//   - runTimeout: the game's total time in next() over the run (time spent by the policy is not counted).
+//   - waveTurnCap / runTurnCap: in-game stalemates (e.g. -6 accuracy against an enemy that never attacks).
+//   - noLegalAction: the game waits for a choice the driver can offer no action for.
+//   - crash: game code threw, in a phase, an answer, a UI hook or an unhandled rejection while next() ran.
+// A truncated run's StallReport (where and why it stopped) is in the decision and logged as one JSON line.
+// After truncation the game is in an unknown state: the run is over, and the next run needs a new game.
 
 import type { Phase } from "#app/phase";
+import { BiomeId } from "#enums/biome-id";
 import { Command } from "#enums/command";
 import type { MoveId } from "#enums/move-id";
 import { MoveUseMode } from "#enums/move-use-mode";
@@ -44,6 +59,7 @@ import type { EvolutionSceneUiHandler } from "#ui/evolution-scene-ui-handler";
 import { SHOP_OPTIONS_ROW_LIMIT } from "#ui/modifier-select-ui-handler";
 import type { MysteryEncounterUiHandler } from "#ui/mystery-encounter-ui-handler";
 import { PartyOption } from "#ui/party-ui-handler";
+import { enumValueToKey } from "#utils/enums";
 import i18next from "i18next";
 import {
   type Action,
@@ -63,13 +79,46 @@ import {
   partyFullActions,
   reviveActions,
   sameAction,
+  type StallReport,
   shopOptions,
   switchActions,
+  type TruncationReason,
 } from "./decisions";
 import { buildObservation, type Observation, type StageInput } from "./observation";
 import { RevealTracker } from "./reveal-tracker";
 
-export type { Action, ActionOf, Decision, MeOption, ShopItem } from "./decisions";
+export type { Action, ActionOf, Decision, MeOption, ShopItem, StallReport, TruncationReason } from "./decisions";
+
+/** When the driver gives up on a run. See the header comment. */
+export interface StallLimits {
+  /** Phases plus decisions with no turn end and no new wave. A turn is ~23 phases. */
+  maxStepsWithoutProgress: number;
+  /** Wall-clock ms one phase may run. A whole wave normally takes well under a second. */
+  phaseTimeoutMs: number;
+  /** Wall-clock ms the game may spend in next() over the whole run. */
+  runTimeoutMs: number;
+  /** Turns in one wave (an encounter's battles in a row count as one wave). */
+  waveTurnCap: number;
+  /** Turns in the whole run. */
+  runTurnCap: number;
+}
+
+/**
+ * Default limits (notes/2026-10-17-stall-detection.md). In 2,000 default-policy runs on the real game and
+ * 320 with starters at level 100, the longest wave took 86 turns, the longest run 304 turns and one
+ * next() call at most 79 phases. The wave cap ends a stalemate after about a second of game time (~3 ms
+ * per turn); the run cap is a backstop, well above a full 200-wave run.
+ */
+export const DEFAULT_STALL_LIMITS: StallLimits = {
+  maxStepsWithoutProgress: 5000,
+  phaseTimeoutMs: 15_000,
+  runTimeoutMs: 300_000,
+  waveTurnCap: 300,
+  runTurnCap: 10_000,
+};
+
+/** How often the watchdog timer checks the running phase while next() awaits it. */
+const WATCHDOG_TICK_MS = 250;
 
 type SetModeInternal = (
   mode: UiMode,
@@ -119,26 +168,52 @@ export class Driver {
   private shownPokemon: Pokemon | null = null;
   /** The NewBattlePhase after an encounter for which pending timers were run. */
   private drained: Phase | null = null;
-  /** Set when the game asks for something the driver can't answer; next() throws it. */
-  private failure: Error | null = null;
+  /** Why the run must stop, set by whatever found out; next() turns it into the truncated decision. */
+  private stall: { reason: TruncationReason; detail: string; error?: unknown } | null = null;
+  /** The decision that ended the run (gameOver or truncated), returned by every later next(). */
+  private outcome: Decision | null = null;
+  /** The last decision's kind, for the stall report. */
+  private lastDecision: Decision["kind"] | null = null;
+  /** performance.now() when the running phase started. */
+  private phaseStartedAt = 0;
+  /** Phases started and decisions raised since the last turn end or new wave, and that wave. */
+  private stepsWithoutProgress = 0;
+  private progressWave = -1;
+  /** Wall-clock ms spent in next() so far. */
+  private gameMs = 0;
+  private readonly limits: StallLimits;
+  /** Undoes the constructor's hooks. */
+  private readonly unhook: () => void;
 
   /** Enemy moves and abilities revealed so far this run, for the observations. */
   public readonly tracker: RevealTracker;
 
   /** Number of TurnEndPhases started. */
   public turns = 0;
+  /** TurnEndPhases started in the current wave, and that wave. */
+  public waveTurns = 0;
+  private turnsWave = -1;
   /** Number of phases started. */
   public phasesRun = 0;
+  /** Number of decisions raised. */
+  public decisions = 0;
 
   /**
    * Take over the game's phase loop. Call when no phase is running, e.g. right after
-   * `classicMode.runToSummon()`, which stops after EncounterPhase ends.
+   * `classicMode.runToSummon()`, which stops after EncounterPhase ends. `limits` overrides some of
+   * {@linkcode DEFAULT_STALL_LIMITS}.
    */
-  constructor(private readonly game: GameManager) {
+  constructor(
+    private readonly game: GameManager,
+    limits: Partial<StallLimits> = {},
+  ) {
+    this.limits = { ...DEFAULT_STALL_LIMITS, ...limits };
     this.tracker = new RevealTracker(game.scene);
     const ui = game.scene.ui as unknown as { setModeInternal: SetModeInternal };
+    const pm = game.scene.phaseManager;
 
-    game.scene.phaseManager["startCurrentPhase"] = () => {
+    const startCurrentPhase = pm["startCurrentPhase"];
+    pm["startCurrentPhase"] = () => {
       this.running = null;
       this.wake?.();
     };
@@ -147,7 +222,13 @@ export class Driver {
     ui.setModeInternal = (mode, clear, force, chain, args) => {
       const done = setModeInternal.call(ui, mode, clear, force, chain, args);
       // A mode is only ready for input once its handler is shown, so act after the transition.
-      done.then(() => this.onModeSet(mode, args));
+      done.then(() => {
+        try {
+          this.onModeSet(mode, args);
+        } catch (error) {
+          this.crashed(error);
+        }
+      });
       return done;
     };
 
@@ -157,16 +238,54 @@ export class Driver {
       this.shownPokemon = pokemon;
       return show.call(info, pokemon, ...rest);
     };
+
+    // The harness keeps the scene for the next test, so put its methods back when done.
+    this.unhook = () => {
+      pm["startCurrentPhase"] = startCurrentPhase;
+      ui.setModeInternal = setModeInternal;
+      info.show = show;
+    };
   }
 
   /**
-   * Run phases until the game waits for the player or the run ends, and return that decision. Throws if
-   * the game waits for a choice that has no legal action.
+   * Run phases until the game waits for the player or the run ends, and return that decision. The run
+   * ends with `gameOver` (terminated: lost or won) or `truncated` (stopped by a watchdog, a turn cap or a
+   * crash; see the header comment). Once it has ended, every call returns the same decision.
    */
   async next(): Promise<Decision> {
+    if (this.outcome != null) {
+      return this.outcome;
+    }
+    const t0 = performance.now();
+    const watchdog = setInterval(() => this.checkPhaseTime(), WATCHDOG_TICK_MS);
+    const onError = (error: unknown) => this.crashed(error);
+    process.on("unhandledRejection", onError);
+    process.on("uncaughtException", onError);
+    try {
+      const decision = await this.step(t0);
+      if (decision.kind === "gameOver" || decision.kind === "truncated") {
+        this.end(decision);
+      } else {
+        this.lastDecision = decision.kind;
+      }
+      return decision;
+    } catch (error) {
+      this.crashed(error);
+      return this.end(this.truncate(t0));
+    } finally {
+      clearInterval(watchdog);
+      process.off("unhandledRejection", onError);
+      process.off("uncaughtException", onError);
+      this.gameMs += performance.now() - t0;
+    }
+  }
+
+  /** The loop of {@linkcode next}. */
+  private async step(t0: number): Promise<Decision> {
     for (;;) {
-      if (this.failure != null) {
-        throw this.failure;
+      this.checkLimits(t0);
+      if (this.stall != null) {
+        return this.truncate(t0);
       }
       if (this.decision != null) {
         return this.decision;
@@ -210,14 +329,111 @@ export class Driver {
       });
       if (this.running == null) {
         this.running = pm.getCurrentPhase();
+        this.phaseStartedAt = performance.now();
         this.phasesRun++;
+        this.countStep();
         if (this.running.is("TurnEndPhase")) {
-          this.turns++;
+          this.countTurn();
         }
         this.running.start();
       }
       await prom;
     }
+  }
+
+  /** A phase or decision: progress only if the wave changed. */
+  private countStep(): void {
+    const wave = this.game.scene.currentBattle?.waveIndex ?? -1;
+    if (wave !== this.progressWave) {
+      this.progressWave = wave;
+      this.stepsWithoutProgress = 0;
+    }
+    this.stepsWithoutProgress++;
+  }
+
+  private countTurn(): void {
+    const wave = this.game.scene.currentBattle.waveIndex;
+    if (wave !== this.turnsWave) {
+      this.turnsWave = wave;
+      this.waveTurns = 0;
+    }
+    this.turns++;
+    this.waveTurns++;
+    this.stepsWithoutProgress = 0;
+  }
+
+  /** Set {@linkcode stall} if a limit is reached. Called between phases. */
+  private checkLimits(t0: number): void {
+    if (this.stall != null) {
+      return;
+    }
+    const { maxStepsWithoutProgress, runTimeoutMs, waveTurnCap, runTurnCap } = this.limits;
+    if (this.waveTurns >= waveTurnCap) {
+      this.stall = { reason: "waveTurnCap", detail: `${this.waveTurns} turns in wave ${this.turnsWave}` };
+    } else if (this.turns >= runTurnCap) {
+      this.stall = { reason: "runTurnCap", detail: `${this.turns} turns in the run` };
+    } else if (this.stepsWithoutProgress >= maxStepsWithoutProgress) {
+      this.stall = {
+        reason: "noProgress",
+        detail: `${this.stepsWithoutProgress} phases and decisions with no turn end or new wave`,
+      };
+    } else if (this.gameMs + performance.now() - t0 >= runTimeoutMs) {
+      this.stall = { reason: "runTimeout", detail: `game time over ${runTimeoutMs} ms` };
+    } else {
+      this.checkPhaseTime();
+    }
+  }
+
+  /** Set {@linkcode stall} if the running phase has run too long, and wake next() to report it. */
+  private checkPhaseTime(): void {
+    const ms = performance.now() - this.phaseStartedAt;
+    if (this.stall == null && this.running != null && ms >= this.limits.phaseTimeoutMs) {
+      this.stall = { reason: "phaseTimeout", detail: `${this.running.phaseName} running for ${Math.round(ms)} ms` };
+      this.wake?.();
+    }
+  }
+
+  /** Game code threw: stop the run (the first error wins) and wake next() to report it. */
+  private crashed(error: unknown): void {
+    if (this.stall == null) {
+      const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      this.stall = { reason: "crash", detail, error };
+    }
+    this.wake?.();
+  }
+
+  /** The truncated decision for {@linkcode stall}. */
+  private truncate(t0: number): Decision {
+    const { reason, detail, error } = this.stall!;
+    const scene = this.game.scene;
+    const phase = scene.phaseManager.getCurrentPhase();
+    const stall: StallReport = {
+      reason,
+      detail,
+      seed: scene.seed,
+      wave: scene.currentBattle?.waveIndex ?? 0,
+      biome: scene.arena ? enumValueToKey(BiomeId, scene.arena.biomeId) : null,
+      phase: (this.running ?? phase)?.phaseName ?? null,
+      uiMode: UiMode[scene.ui.mode] ?? null,
+      lastDecision: this.lastDecision,
+      turns: this.turns,
+      waveTurns: this.waveTurns,
+      phases: this.phasesRun,
+      decisions: this.decisions,
+      gameMs: Math.round(this.gameMs + performance.now() - t0),
+      error: error instanceof Error ? (error.stack ?? String(error)) : null,
+    };
+    console.warn(JSON.stringify({ event: "truncated", ...stall }));
+    return { kind: "truncated", reason, stall, legal: [] };
+  }
+
+  /** Make `decision` the run's outcome: no decision is pending after it. */
+  private end(decision: Decision): Decision {
+    this.outcome = decision;
+    this.decision = null;
+    this.answer = null;
+    this.input = null;
+    return decision;
   }
 
   /**
@@ -237,7 +453,12 @@ export class Driver {
     this.decision = null;
     this.answer = null;
     this.input = null;
-    answer(action);
+    try {
+      answer(action);
+    } catch (error) {
+      // Game code threw while applying a legal action: next() reports it.
+      this.crashed(error);
+    }
   }
 
   /**
@@ -251,9 +472,14 @@ export class Driver {
     return buildObservation(this.game.scene, this.tracker, this.input);
   }
 
-  /** Stop tracking reveals. Call when done with the run. */
+  /**
+   * Stop tracking reveals and remove the driver's hooks from the scene, which the harness reuses for the
+   * next test: without this, each run's driver (and everything it references) stays reachable from the
+   * scene. Call when done with the run.
+   */
   dispose(): void {
     this.tracker.dispose();
+    this.unhook();
   }
 
   /** Turn a finished UI mode change into a decision if the current phase is now waiting for input. */
@@ -325,16 +551,18 @@ export class Driver {
 
   /**
    * Make `decision` the current one. `input` describes it for {@linkcode observe}. A decision with no legal
-   * action can't be answered, so it makes next() throw instead of waiting forever.
+   * action can't be answered, so it truncates the run instead of waiting forever.
    */
   private raise(decision: Decision, input: StageInput, answer: Answer): void {
     if (decision.legal.length === 0) {
       const phase = this.game.scene.phaseManager.getCurrentPhase().phaseName;
-      this.failure = new Error(`Decision ${decision.kind} in ${phase} has no legal action`);
+      this.stall ??= { reason: "noLegalAction", detail: `${decision.kind} in ${phase}` };
     } else {
       this.decision = decision;
       this.input = input;
       this.answer = answer;
+      this.decisions++;
+      this.countStep();
     }
     this.wake?.();
   }

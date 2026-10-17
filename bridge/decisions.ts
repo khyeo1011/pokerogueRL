@@ -7,6 +7,7 @@
 import { MAX_TERAS_PER_ARENA } from "#app/constants";
 import { globalScene } from "#app/global-scene";
 import { speciesDataRegistry } from "#app/global-species-data-registry";
+import { allMoves } from "#data/data-lists";
 import { getDailyEventSeedBoss } from "#data/daily-run";
 import { isDailyFinalBoss } from "#data/daily-seed-utils";
 import { AbilityId } from "#enums/ability-id";
@@ -102,6 +103,43 @@ export interface MeOption {
   special: boolean;
 }
 
+/** Why a run was truncated (see bridge/driver.ts). */
+export type TruncationReason =
+  | "noProgress"
+  | "phaseTimeout"
+  | "runTimeout"
+  | "waveTurnCap"
+  | "runTurnCap"
+  | "noLegalAction"
+  | "crash";
+
+/** Where and why a run was truncated, as plain JSON for logs. */
+export interface StallReport {
+  reason: TruncationReason;
+  /** What tripped, e.g. "TurnEndPhase running for 15000 ms", or the error message. */
+  detail: string;
+  /** The run's seed (`scene.seed`). */
+  seed: string;
+  wave: number;
+  /** BiomeId name. */
+  biome: string | null;
+  /** The phase running (or next to run) when the run stopped. */
+  phase: string | null;
+  /** UiMode name. */
+  uiMode: string | null;
+  /** Kind of the last decision returned before the stall. */
+  lastDecision: string | null;
+  turns: number;
+  /** Turns in the current wave. */
+  waveTurns: number;
+  phases: number;
+  decisions: number;
+  /** Wall-clock ms the game ran in Driver.next() over the run. */
+  gameMs: number;
+  /** The stack of the error, for crashes. */
+  error: string | null;
+}
+
 /** A point where the game waits for the player, with every action the game would accept there. */
 export type Decision =
   /** Choose what an active Pokémon does this turn. */
@@ -157,8 +195,13 @@ export type Decision =
    * item), a menu before picking one (e.g. which move to learn, with "Cancel" to decline), or a yes/no prompt.
    */
   | { kind: "meSubOption"; encounterType: MysteryEncounterType; labels: string[]; legal: ActionOf<"meSubOption">[] }
-  /** The run is over (`GameOverPhase` is next). Nothing is legal. */
-  | { kind: "gameOver"; victory: boolean; legal: never[] };
+  /** The run is over (`GameOverPhase` is next): terminated, lost or won. Nothing is legal. */
+  | { kind: "gameOver"; victory: boolean; legal: never[] }
+  /**
+   * The run was stopped before its end (truncated, not terminated): a watchdog or turn cap tripped, or game
+   * code threw. Nothing is legal; the game can't go on.
+   */
+  | { kind: "truncated"; reason: TruncationReason; stall: StallReport; legal: never[] };
 
 /** Whether two actions are the same (an absent `tera` equals `tera: false`). */
 export function sameAction(a: Action, b: Action): boolean {
@@ -355,7 +398,13 @@ export function itemTargetActions(
           .filter(move => (moveSelectFilter?.(pokemon.moveset[move]) ?? null) === null)
           .map(move => ({ kind: "itemTarget", partySlot, move }));
       case PartyUiMode.REMEMBER_MOVE_MODIFIER:
-        return pokemon.getLearnableLevelMoves().map((_, move) => ({ kind: "itemTarget", partySlot, move }));
+        // An unimplemented move (shown with "(N)") is offered, but LearnMovePhase ends without teaching it
+        // and the reward screen comes back unchanged: picking it again and again loops forever.
+        return pokemon
+          .getLearnableLevelMoves()
+          .map(([, moveId], move) => ({ moveId, move }))
+          .filter(({ moveId }) => !allMoves[moveId].isUnimplemented)
+          .map(({ move }) => ({ kind: "itemTarget", partySlot, move }));
       default:
         return [{ kind: "itemTarget", partySlot }];
     }

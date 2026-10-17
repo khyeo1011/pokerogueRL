@@ -45,6 +45,19 @@ scripts/train.sh 8 --timesteps 1000000
 
 Runs are saved to `runs/<timestamp>/model.zip`. Set `BASE_PORT` (in both terminals) to use a different port range. `scripts/train.sh N --help` lists all training flags.
 
+## Batch runs
+
+Play many runs of the real game (random starter teams, the scripted default policy, mystery encounters
+on) to check that none hangs, here 160 runs in 4 processes:
+
+```bash
+scripts/run_games.sh 160 4
+```
+
+Each run writes one JSON line (seed, team, outcome, waves, turns, timings, the stall report if the driver
+truncated it) to `runs/games-<timestamp>/runs.jsonl`, and a summary goes to `summary.json`. See
+`notes/2026-10-17-stall-detection.md`.
+
 ## Layout
 
 | Path | What |
@@ -52,11 +65,13 @@ Runs are saved to `runs/<timestamp>/model.zip`. Set `BASE_PORT` (in both termina
 | `pokerogue/` | Upstream game (git submodule, pinned commit). Don't edit it; see `CLAUDE.md`. |
 | `bridge/` | TypeScript bridge: runs a headless game and serves it over TCP |
 | `bridge/test/` | Vitest tests on pokerogue's harness (`scripts/test_bridge.sh`) |
+| `bridge/batch/` | Batch runner: many real-game runs per process (`scripts/run_games.sh`) |
 | `src/pokerogue_rl/env.py` | Gymnasium env (client for one bridge) |
 | `src/pokerogue_rl/train.py` | Training entry point (`pokerogue-train`) |
-| `scripts/` | `setup.sh`, `start_server.sh`, `train.sh`, `test_bridge.sh` |
+| `src/pokerogue_rl/games.py` | Launches batch runs in parallel and summarizes them |
+| `scripts/` | `setup.sh`, `start_server.sh`, `train.sh`, `test_bridge.sh`, `run_games.sh` |
 | `notes/` | Findings and investigation write-ups |
-| `runs/` | Training outputs (gitignored) |
+| `runs/` | Training and batch outputs (gitignored) |
 
 ## Updating PokéRogue
 

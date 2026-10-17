@@ -1,30 +1,17 @@
-// Helpers for driver tests. Driver.next() has no watchdog yet (issue #9), so nextDecision() fails a stuck
-// run with the phase and UI mode it is stuck at instead of hanging until the test times out.
+// Helpers for driver tests. A run the driver truncates (issue #9: a watchdog, a turn cap or a crash) fails
+// the test with the driver's stall report, since these tests expect every run to end in game over.
 
-import { UiMode } from "#enums/ui-mode";
 import type { GameManager } from "#test/framework/game-manager";
 import type { Decision, Driver } from "../driver";
 import { defaultPolicy } from "../policy";
 
-/** How long one Driver.next() may take. A whole wave normally takes well under a second. */
-const STUCK_MS = 15_000;
-
-/** Driver.next(), failing with where the game is if no decision comes within `ms`. */
-export async function nextDecision(game: GameManager, driver: Driver, ms = STUCK_MS): Promise<Decision> {
-  let timer: NodeJS.Timeout | undefined;
-  const stuck = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      const phase = game.scene.phaseManager.getCurrentPhase()?.phaseName;
-      const mode = UiMode[game.scene.ui.mode];
-      const wave = game.scene.currentBattle?.waveIndex;
-      reject(new Error(`Driver stuck for ${ms} ms in ${phase} with UI mode ${mode} (wave ${wave})`));
-    }, ms);
-  });
-  try {
-    return await Promise.race([driver.next(), stuck]);
-  } finally {
-    clearTimeout(timer);
+/** Driver.next(), failing with the stall report if the driver truncates the run. */
+export async function nextDecision(_game: GameManager, driver: Driver): Promise<Exclude<Decision, { kind: "truncated" }>> {
+  const decision = await driver.next();
+  if (decision.kind === "truncated") {
+    throw new Error(`Run truncated: ${JSON.stringify(decision.stall, null, 2)}`);
   }
+  return decision;
 }
 
 /** Answer decisions with the default policy until one of `kind` comes up, and return it. */
