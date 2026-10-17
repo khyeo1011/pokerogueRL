@@ -1,0 +1,31 @@
+[project]
+name = "pokerogue-rl"
+version = "0.1.0"
+description = "Reinforcement learning agents for PokéRogue"
+readme = "README.md"
+authors = [
+    { name = "Sebastian Yeo", email = "khyeo81@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "gymnasium>=1.4.0",
+    "numpy>=2.5.4",
+    "stable-baselines3>=2.9.0",
+    "torch>=2.14.1",
+]
+
+[project.scripts]
+pokerogue-train = "pokerogue_rl.train:main"
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+]
+
+[tool.ruff]
+extend-exclude = ["pokerogue"]
