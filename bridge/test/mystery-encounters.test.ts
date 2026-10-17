@@ -322,18 +322,24 @@ describe("Mystery encounter edge cases", { timeout: 120_000 }, () => {
     expect(() => driver.act({ kind: "meOption", index: 1 })).toThrow(/Illegal action/);
   });
 
-  it("a Pokémon pick that no Pokémon passes fails the run clearly", async () => {
+  it("an option whose party screen has no valid Pokémon is cancelled and drops out of the menu", async () => {
     game = new GameManager(phaserGame);
     const held: ModifierOverride[] = [{ name: "BERRY", count: 2, type: BerryType.SITRUS }];
     const setup = { wave: 42, biome: BiomeId.CAVE, held };
-    const driver = await bootBefore(game, "me-no-pick", MysteryEncounterType.DELIBIRDY, setup);
-    await playUntil(game, driver, "mysteryEncounter");
-    // "Give Food" was legal when the menu opened; without the berries its party screen has no valid Pokémon.
+    const driver = await bootBefore(game, "me-dead-end", MysteryEncounterType.DELIBIRDY, setup);
+    const first = await playUntil(game, driver, "mysteryEncounter");
+    expect(first.legal).toContainEqual({ kind: "meOption", index: 1 });
+    // "Give Food" was legal when the menu opened; without the berries its party screen has no valid Pokémon
+    // (as The GTS's "Trade an Item" is with no held items, whatever the party).
     for (const berry of game.scene.findModifiers(m => m.is("BerryModifier"))) {
       game.scene.removeModifier(berry);
     }
     driver.act({ kind: "meOption", index: 1 });
-    await expect(nextDecision(game, driver)).rejects.toThrow(/mePokemon .* has no legal action/);
+    const again = await nextDecision(game, driver);
+    expect(again.kind).toBe("mysteryEncounter");
+    expect(again.legal).not.toContainEqual({ kind: "meOption", index: 1 });
+    driver.act(again.legal[0]);
+    await playPastWave(driver, 42);
   });
 
   it("The Expert Pokémon Breeder: losing its battle does not end the run (onGameOver)", async () => {

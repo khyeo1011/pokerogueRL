@@ -101,6 +101,9 @@ export class Driver {
   private pickedItem = "";
   /** The MysteryEncounterPhase whose menu was answered: its menu shows again while the option runs. */
   private meAnswered: Phase | null = null;
+  /** The option last picked on an encounter menu, and the options of that menu found to be dead ends. */
+  private meChosen = -1;
+  private meDeadEnds: { phase: Phase; options: number[] } | null = null;
   /** The phase in which mePokemon was last answered: a menu that follows in it is the second pick. */
   private mePickedIn: Phase | null = null;
   /** The last Pokémon shown in the info box (an encounter's gift Pokémon, for partyFull). */
@@ -368,7 +371,19 @@ export class Driver {
         respond(action.partySlot, PartyOption.REVIVE),
       );
     } else if (partyUiMode === PartyUiMode.SELECT && this.inMysteryEncounter()) {
-      const decision: Decision = { kind: "mePokemon", encounterType: this.encounterType(), legal: mePokemonActions(args[3]) };
+      const legal = mePokemonActions(args[3]);
+      if (legal.length === 0 && phase.is("MysteryEncounterPhase")) {
+        // No Pokémon can be picked (The GTS's "Trade an Item" with no held items): cancel, which is all the
+        // player could do, and the menu shows again without that option.
+        this.meDeadEnds = {
+          phase,
+          options: [...(this.meDeadEnds?.phase === phase ? this.meDeadEnds.options : []), this.meChosen],
+        };
+        this.meAnswered = null;
+        respond(this.game.scene.getPlayerParty().length, PartyOption.CANCEL);
+        return;
+      }
+      const decision: Decision = { kind: "mePokemon", encounterType: this.encounterType(), legal };
       this.raise(decision, (action: ActionOf<"mePokemon">) => {
         this.mePickedIn = phase;
         respond(action.partySlot, PartyOption.SELECT);
@@ -626,10 +641,13 @@ export class Driver {
       description: encounterText(box?.description),
       query: encounterText(box?.query),
       options: view,
-      legal: meOptionActions(view),
+      legal: meOptionActions(view).filter(
+        a => !(this.meDeadEnds?.phase === phase && this.meDeadEnds.options.includes(a.index)),
+      ),
     };
     this.raise(decision, (action: ActionOf<"meOption">) => {
       this.meAnswered = phase;
+      this.meChosen = action.index;
       phase.handleOptionSelect(options[action.index], action.index);
     });
   }
