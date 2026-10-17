@@ -1,0 +1,8 @@
+// Inherit pokerogue's #alias paths (resolved relative to pokerogue/) so bridge code can import the game.
+{
+  "extends": "../pokerogue/tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".."
+  },
+  "include": ["**/*.ts"]
+}
