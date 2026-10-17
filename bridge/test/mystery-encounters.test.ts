@@ -150,15 +150,24 @@ const CASES: Case[] = [
   },
 ];
 
-/** One row per encounter with the default policy (option -1), then one per option. */
-const ROWS = CASES.flatMap(c =>
-  [-1, ...Array.from({ length: c.options }, (_, i) => i)].map(option => ({
-    ...c,
-    name: MysteryEncounterType[c.type],
-    option,
-    label: option < 0 ? "default policy" : `option ${option + 1}`,
-  })),
-);
+/**
+ * One row per encounter with the default policy (option -1), then two per option: one answers the
+ * encounter's later Pokémon picks, follow-up menus and later menus (Safari Zone turns) with the first legal
+ * entry (as the default policy does), one with the last (e.g. the last Pokémon, "No", declining the move
+ * tutor, fleeing).
+ */
+const ROWS = CASES.flatMap(c => [
+  { ...c, name: MysteryEncounterType[c.type], option: -1, last: false, label: "default policy" },
+  ...Array.from({ length: c.options }, (_, option) =>
+    [false, true].map(last => ({
+      ...c,
+      name: MysteryEncounterType[c.type],
+      option,
+      last,
+      label: `option ${option + 1}, ${last ? "last" : "first"} picks`,
+    })),
+  ).flat(),
+]);
 
 /**
  * The decision shows what the screen shows: the option labels as drawn by the encounter menu, no unfilled
@@ -207,7 +216,7 @@ describe("Mystery encounters through the driver", () => {
     phaserGame = new Phaser.Game({ type: Phaser.HEADLESS });
   });
 
-  it.each(ROWS)("$name, $label", { timeout: 120_000 }, async ({ type, options, option, name, ...setup }) => {
+  it.each(ROWS)("$name, $label", { timeout: 120_000 }, async ({ type, options, option, last, name, ...setup }) => {
     const game = new GameManager(phaserGame);
     const driver = await bootBefore(game, `me-${name}-${option}`, type, setup);
 
@@ -235,12 +244,20 @@ describe("Mystery encounters through the driver", () => {
         }
         console.info(JSON.stringify(decision));
       }
+      const later =
+        decision.kind === "mePokemon" || decision.kind === "meSubOption" || decision.kind === "mysteryEncounter";
+      if (last && later) {
+        driver.act(decision.legal.at(-1)!);
+        continue;
+      }
       driver.act(defaultAction(game.scene, decision));
     }
 
     expect(picked).toBe(true);
     const end = decision.kind === "gameOver" ? "game over" : `wave ${game.scene.currentBattle.waveIndex}`;
-    console.info(`${name} (${option < 0 ? "default" : `option ${option + 1}`}): ${end}; ${seen.join(" ")}`);
+    console.info(
+      `${name} (${option < 0 ? "default" : `option ${option + 1}${last ? ", last" : ""}`}): ${end}; ${seen.join(" ")}`,
+    );
   });
 });
 
