@@ -1,5 +1,6 @@
 // Checks that startClassicRun() (bridge/run.ts) boots the real game: each harness change listed in
-// issue #3 is undone, and the run's RNG comes from its seed. Run with scripts/test_bridge.sh.
+// issue #3 is undone, and the run's RNG comes from its seed. A whole run replays from its seed, also past
+// wave 35 where upstream draws from Math.random (issue #9). Run with scripts/test_bridge.sh.
 
 import { activeOverrides, defaultOverrides } from "#app/overrides";
 import { Nature } from "#enums/nature";
@@ -7,6 +8,8 @@ import { SpeciesId } from "#enums/species-id";
 import { GameManager } from "#test/framework/game-manager";
 import Phaser from "phaser";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { Driver } from "../driver";
+import { defaultPolicy } from "../policy";
 import { startClassicRun } from "../run";
 
 const STARTERS = [SpeciesId.CHARMANDER, SpeciesId.SQUIRTLE, SpeciesId.BULBASAUR];
@@ -74,6 +77,42 @@ describe("startClassicRun", () => {
       expect(runs).toHaveLength(3);
       expect(runs[1]).toEqual(runs[0]);
       expect(runs[2]).not.toEqual(runs[0]);
+    });
+  });
+
+  // Starters at level 100 reach the evil-team waves (35, 62, 64, 66), whose trainers use Math.random.
+  describe("replay", () => {
+    /** Per run: every decision with its legal actions and the action taken, and the final party. */
+    const runs: { trace: string[]; party: string[] }[] = [];
+
+    it.each([1, 2])("plays the same run from the same seed (%i)", { timeout: 120_000 }, async () => {
+      const game = new GameManager(phaserGame);
+      game.override.startingLevel(100);
+      await startClassicRun(game, "replay", ...STARTERS);
+      const driver = new Driver(game);
+      const trace: string[] = [];
+      for (;;) {
+        const decision = await driver.next();
+        trace.push(`${game.scene.currentBattle.waveIndex} ${JSON.stringify(decision)}`);
+        expect(decision.kind).not.toBe("truncated");
+        if (decision.kind === "gameOver" || decision.kind === "truncated") {
+          break;
+        }
+        const action = defaultPolicy(driver.observe(), decision.legal);
+        trace.push(JSON.stringify(action));
+        driver.act(action);
+      }
+      driver.dispose();
+      const party = game.scene.getPlayerParty().map(p => `${p.species.speciesId} L${p.level} ${p.hp}/${p.getMaxHp()}`);
+      runs.push({ trace, party });
+    });
+
+    // (The number of phases can differ by one: some phases are queued from timers.)
+    it("got past wave 35 the same way twice", () => {
+      expect(runs).toHaveLength(2);
+      expect(Number.parseInt(runs[0].trace.at(-1)!)).toBeGreaterThan(35);
+      expect(runs[1].trace).toEqual(runs[0].trace);
+      expect(runs[1].party).toEqual(runs[0].party);
     });
   });
 });
