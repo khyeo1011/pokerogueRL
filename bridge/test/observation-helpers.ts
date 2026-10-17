@@ -69,7 +69,10 @@ export const ALLOWED_PATHS: ReadonlySet<string> = new Set(
       ...option.map(k => `stage.options[].${k}`),
       ...option.map(k => `stage.shop[].${k}`),
       "stage.rerollCost",
+      "stage.item.id",
+      "stage.item.args[]",
       "stage.partySlot",
+      "stage.speciesId",
       "stage.choices[]",
       "stage.encounterType",
       "stage.tier",
@@ -127,4 +130,23 @@ export function leafPaths(value: unknown, path = "", out = new Set<string>()): S
 export function disallowedPaths(obs: unknown): string[] {
   const allowed = [...ALLOWED_PATHS];
   return [...leafPaths(obs)].filter(p => !ALLOWED_PATHS.has(p) && !allowed.some(a => a.startsWith(`${p}.`)));
+}
+
+/**
+ * Paths (with array indices) where `a` and `b` differ, e.g. `battle.enemies[0].hp`. Empty when they are
+ * deep-equal. A key present on one side only is reported as a difference at that key.
+ */
+export function observationDiff(a: unknown, b: unknown, path = ""): string[] {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const n = Math.max(a.length, b.length);
+    return Array.from({ length: n }, (_, i) => observationDiff(a[i], b[i], `${path}[${i}]`)).flat();
+  }
+  const isObject = (v: unknown) => typeof v === "object" && v !== null && !Array.isArray(v);
+  if (isObject(a) && isObject(b)) {
+    const keys = new Set([...Object.keys(a as object), ...Object.keys(b as object)]);
+    return [...keys].flatMap(k =>
+      observationDiff((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k], path ? `${path}.${k}` : k),
+    );
+  }
+  return Object.is(a, b) ? [] : [path];
 }
