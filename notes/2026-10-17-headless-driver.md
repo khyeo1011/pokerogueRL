@@ -32,6 +32,8 @@ Most of a run is in those phases.
 | `reward` | `MODIFIER_SELECT` in `SelectModifierPhase` | callback `(-1, -1)`, then the skip `CONFIRM` is answered yes |
 | `gameOver` | `GameOverPhase` is next | (not started, so the game never reaches the title screen) |
 
+Issue #7 extended this to every decision point: see `2026-10-17-decision-points.md` for the full table.
+
 Boot still goes through the harness (`classicMode.runToSummon`, ~0.5 s). It stops after `EncounterPhase`
 ends, so the driver takes over with no phase running.
 
