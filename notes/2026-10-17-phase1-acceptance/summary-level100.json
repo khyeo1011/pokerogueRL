@@ -1,0 +1,127 @@
+{
+  "runs": 300,
+  "outcomes": {
+    "terminated": 297,
+    "truncated": 3
+  },
+  "truncationReasons": {
+    "noLegalAction": 3
+  },
+  "truncated": [
+    {
+      "seed": "accept100-57",
+      "reason": "noLegalAction",
+      "wave": 79,
+      "phase": "SwitchPhase",
+      "detail": "switch in SwitchPhase"
+    },
+    {
+      "seed": "accept100-144",
+      "reason": "noLegalAction",
+      "wave": 75,
+      "phase": "SwitchPhase",
+      "detail": "switch in SwitchPhase"
+    },
+    {
+      "seed": "accept100-229",
+      "reason": "noLegalAction",
+      "wave": 65,
+      "phase": "SwitchPhase",
+      "detail": "switch in SwitchPhase"
+    }
+  ],
+  "errors": [],
+  "wave": {
+    "min": 13,
+    "median": 90.0,
+    "mean": 86.9,
+    "max": 115
+  },
+  "turns": {
+    "min": 15,
+    "median": 158.0,
+    "mean": 158.0,
+    "max": 288
+  },
+  "maxWaveTurns": 80,
+  "maxPhasesPerNext": 85,
+  "decisions": {
+    "min": 39,
+    "median": 397.5,
+    "mean": 389.9,
+    "max": 644
+  },
+  "wallMs": {
+    "min": 216,
+    "median": 2345.5,
+    "mean": 2342.6,
+    "max": 4396
+  },
+  "bootMs": {
+    "min": 103,
+    "median": 108.0,
+    "mean": 137.8,
+    "max": 719
+  },
+  "mysteryEncounters": 1492,
+  "mysteryEncounterTypes": {
+    "MYSTERIOUS_CHALLENGERS": 133,
+    "DELIBIRDY": 127,
+    "FIGHT_OR_FLIGHT": 110,
+    "MYSTERIOUS_CHEST": 108,
+    "SHADY_VITAMIN_DEALER": 108,
+    "UNCOMMON_BREED": 106,
+    "BERRIES_ABOUND": 105,
+    "TRAINING_SESSION": 103,
+    "THE_POKEMON_SALESMAN": 91,
+    "FUN_AND_GAMES": 86,
+    "DEPARTMENT_STORE_SALE": 55,
+    "TELEPORTING_HIJINKS": 49,
+    "GLOBAL_TRADE_SYSTEM": 47,
+    "PART_TIMER": 45,
+    "BUG_TYPE_SUPERFAN": 35,
+    "DANCING_LESSONS": 29,
+    "THE_EXPERT_POKEMON_BREEDER": 27,
+    "DARK_DEAL": 24,
+    "SLUMBERING_SNORLAX": 23,
+    "SAFARI_ZONE": 23,
+    "WEIRD_DREAM": 23,
+    "CLOWNING_AROUND": 23,
+    "LOST_AT_SEA": 4,
+    "ABSOLUTE_AVARICE": 3,
+    "THE_STRONG_STUFF": 3,
+    "FIERY_FALLOUT": 2
+  },
+  "perWorker": {
+    "gamesPerHour": 1451,
+    "turnsPerSecond": 63.7,
+    "decisionsPerSecond": 157.2,
+    "playTurnsPerSecond": 67.4,
+    "playDecisionsPerSecond": 166.4
+  },
+  "level": 100,
+  "processes": 16,
+  "chunks": 16,
+  "exitCodes": {
+    "0": 16
+  },
+  "elapsedS": 61.0,
+  "runsPerMinute": 295.0,
+  "betweenRunsMs": {
+    "min": 0,
+    "median": 1.0,
+    "mean": 0.7,
+    "max": 2
+  },
+  "processStartupS": {
+    "min": 7.14,
+    "median": 7.295,
+    "mean": 7.3,
+    "max": 7.53
+  },
+  "aggregate": {
+    "gamesPerHour": 17700,
+    "turnsPerSecond": 776.8,
+    "decisionsPerSecond": 1916.9
+  }
+}

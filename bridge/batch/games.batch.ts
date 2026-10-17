@@ -4,7 +4,8 @@
 // per run, so the harness resets the game between runs (one GameManager per test).
 //
 // Environment: BATCH_PREFIX (seeds are `<prefix>-<n>`, default "batch"), BATCH_START (first n, default 0),
-// BATCH_COUNT (number of runs, default 10), BATCH_OUT (JSON lines file, default runs/games.jsonl).
+// BATCH_COUNT (number of runs, default 10), BATCH_OUT (JSON lines file, default runs/games.jsonl),
+// BATCH_LEVEL (starters' level, through the harness's startingLevel override; default 0: the real game's).
 // scripts/run_games.sh launches several of these processes and summarizes their files.
 
 import { appendFileSync, mkdirSync } from "node:fs";
@@ -22,12 +23,15 @@ import { randomTeam } from "../team";
 const PREFIX = process.env.BATCH_PREFIX ?? "batch";
 const START = Number(process.env.BATCH_START ?? 0);
 const COUNT = Number(process.env.BATCH_COUNT ?? 10);
+const LEVEL = Number(process.env.BATCH_LEVEL ?? 0);
 const OUT = resolve(process.env.BATCH_OUT ?? resolve(import.meta.dirname, "../../runs/games.jsonl"));
 const SEEDS = Array.from({ length: COUNT }, (_, i) => `${PREFIX}-${START + i}`);
 
 /** One line of the output file. */
 interface RunRecord {
   seed: string;
+  /** The starters' level override, or 0 for the real game's. */
+  level: number;
   /** Species names, lead first. */
   team: string[];
   /** victory or terminated (game over), truncated (stopped by the driver), error (the runner threw). */
@@ -44,6 +48,8 @@ interface RunRecord {
   maxPhasesPerNext: number;
   /** Mystery encounters met, as `TYPE@wave`. */
   mysteryEncounters: string[];
+  /** When the run started (epoch ms), to measure process startup and the time between runs. */
+  startedAt: number;
   /** Wall-clock ms to boot the run, and to play it after boot (game and policy). */
   bootMs: number;
   wallMs: number;
@@ -64,6 +70,7 @@ describe("batch of Classic runs", () => {
     const team = randomTeam(seed);
     const record: RunRecord = {
       seed,
+      level: LEVEL,
       team: team.map(id => SpeciesId[id]),
       outcome: "error",
       reason: null,
@@ -74,6 +81,7 @@ describe("batch of Classic runs", () => {
       phases: 0,
       maxPhasesPerNext: 0,
       mysteryEncounters: [],
+      startedAt: Date.now(),
       bootMs: 0,
       wallMs: 0,
       heapMb: 0,
@@ -83,6 +91,9 @@ describe("batch of Classic runs", () => {
     const t0 = performance.now();
     try {
       const game = new GameManager(phaserGame);
+      if (LEVEL > 0) {
+        game.override.startingLevel(LEVEL);
+      }
       await startClassicRun(game, seed, ...team);
       record.bootMs = Math.round(performance.now() - t0);
       driver = new Driver(game);
