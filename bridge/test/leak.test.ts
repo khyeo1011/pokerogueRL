@@ -1,14 +1,17 @@
 // Leak test for the observation layer (issue #6): on a fixed game state, re-roll everything about the
 // enemies that a player cannot see (IVs, nature, exact stats and HP within the same HP-bar pixel,
 // unrevealed moves and abilities, unseen trainer Pokémon, the RNG seed) and check that the observation
-// does not change. A builder that leaks a hidden field must fail the same check. Run with
-// scripts/test_bridge.sh.
+// does not change. A builder that leaks a hidden field must fail the same check. At a mystery encounter's
+// menus, re-seeding the RNG (which decides the outcomes, rolled after the choice) must not change the
+// observation either, and observing must not draw from the RNG. Run with scripts/test_bridge.sh.
 
 import type { BattleScene } from "#app/battle-scene";
 import { speciesDataRegistry } from "#app/global-species-data-registry";
 import { allAbilities } from "#data/data-lists";
 import { BattleType } from "#enums/battle-type";
+import { BiomeId } from "#enums/biome-id";
 import { MoveId } from "#enums/move-id";
+import { MysteryEncounterType } from "#enums/mystery-encounter-type";
 import { SpeciesId } from "#enums/species-id";
 import type { EnemyPokemon } from "#field/pokemon";
 import { PokemonMove } from "#moves/pokemon-move";
@@ -17,6 +20,7 @@ import Phaser from "phaser";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { Driver } from "../driver";
 import { buildObservation, type Observation } from "../observation";
+import { defaultPolicy } from "../policy";
 import type { RevealTracker } from "../reveal-tracker";
 import { startClassicRun } from "../run";
 import { observationDiff } from "./observation-helpers";
@@ -238,5 +242,46 @@ describe("observation leak test", () => {
   it.each(Object.keys(leakyBuilders))("catches a builder that leaks the enemy's %s", async name => {
     const { scene, tracker } = await bootDamagedEnemy("leak-wild");
     expect(leakDiff(scene, tracker, leakyBuilders[name], 1)).not.toEqual([]);
+  });
+
+  // Options whose outcome is rolled after the choice (the chest), that start a battle, or that open a party
+  // screen (mePokemon) and then a menu (meSubOption: Training Session's nature).
+  it.each([
+    { type: MysteryEncounterType.MYSTERIOUS_CHEST, option: 0 },
+    { type: MysteryEncounterType.FIGHT_OR_FLIGHT, option: 0 },
+    { type: MysteryEncounterType.TRAINING_SESSION, option: 1 },
+    { type: MysteryEncounterType.SHADY_VITAMIN_DEALER, option: 0 },
+  ])("a mystery encounter's menus show no outcome (type $type)", { timeout: 60_000 }, async ({ type, option }) => {
+    const game = new GameManager(phaserGame);
+    game.override.startingWave(41).startingBiome(BiomeId.CAVE).startingLevel(100).disableTrainerWaves();
+    await startClassicRun(game, `leak-me-${type}`, ...STARTERS);
+    game.override.mysteryEncounterChance(100).mysteryEncounter(type);
+    const scene = game.scene;
+    scene.money = 100_000;
+    const driver = new Driver(game);
+    tracker = driver.tracker;
+    const checked: string[] = [];
+    for (;;) {
+      const decision = await driver.next();
+      if (decision.kind === "gameOver" || scene.currentBattle.waveIndex > 42) {
+        break;
+      }
+      const encounterStage =
+        decision.kind === "mysteryEncounter" || decision.kind === "mePokemon" || decision.kind === "meSubOption";
+      if (encounterStage) {
+        game.override.mysteryEncounterChance(0);
+        const rng = Phaser.Math.RND.state();
+        const before = driver.observe();
+        expect(Phaser.Math.RND.state(), "observing draws from the RNG").toBe(rng);
+        scene.setSeed(`leak-me-reroll-${checked.length}`);
+        scene.resetSeed();
+        expect(observationDiff(before, driver.observe())).toEqual([]);
+        checked.push(decision.kind);
+      }
+      const first = decision.kind === "mysteryEncounter" && checked.length === 1;
+      driver.act(first ? { kind: "meOption", index: option } : defaultPolicy(driver.observe(), decision.legal));
+    }
+    console.info(`type ${type}: checked ${checked.join(", ")}`);
+    expect(checked[0]).toBe("mysteryEncounter");
   });
 });

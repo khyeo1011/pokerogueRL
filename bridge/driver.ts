@@ -14,6 +14,11 @@
 // the move, checkSwitch answers "will you switch?" and the party screen, partyFull answers the
 // full-party menu and the release screen. Prompts with no effect on play are answered here, not raised.
 //
+// Mystery encounters (issue #8) add three decisions: the encounter's option menu, the party screen an
+// option opens to pick a Pokémon, and follow-up menus (a second pick after the Pokémon, a menu before
+// it, or a yes/no prompt). Their battles, reward screens and caught Pokémon use the decisions above.
+// Eggs (which encounters hand out) hatch with "skip hatching?" answered yes, and the summary closed.
+//
 // Each decision comes with its observation (issue #10): raise() takes the StageInput for the decision,
 // built from what the UI mode passed, and observe() turns it into the fair-information observation
 // (bridge/observation.ts) with the driver's RevealTracker. A policy gets only that observation and the
@@ -23,17 +28,23 @@ import type { Phase } from "#app/phase";
 import { Command } from "#enums/command";
 import type { MoveId } from "#enums/move-id";
 import { MoveUseMode } from "#enums/move-use-mode";
+import type { MysteryEncounterType } from "#enums/mystery-encounter-type";
 import { PartyUiMode } from "#enums/party-ui-mode";
 import { UiMode } from "#enums/ui-mode";
+import type { Pokemon } from "#field/pokemon";
 import { type ModifierType, type ModifierTypeOption, PokemonModifierType } from "#modifiers/modifier-type";
+import type { MysteryEncounterOption } from "#mystery-encounters/mystery-encounter-option";
 import type { CommandPhase } from "#phases/command-phase";
 import type { EvolutionPhase } from "#phases/evolution-phase";
+import type { MysteryEncounterPhase } from "#phases/mystery-encounter-phases";
 import type { ModifierSelectCallback, SelectModifierPhase } from "#phases/select-modifier-phase";
 import type { GameManager } from "#test/framework/game-manager";
 import type { ConfirmModeConfig, OptionSelectModeConfig } from "#types/ui-types";
 import type { EvolutionSceneUiHandler } from "#ui/evolution-scene-ui-handler";
 import { SHOP_OPTIONS_ROW_LIMIT } from "#ui/modifier-select-ui-handler";
+import type { MysteryEncounterUiHandler } from "#ui/mystery-encounter-ui-handler";
 import { PartyOption } from "#ui/party-ui-handler";
+import i18next from "i18next";
 import {
   type Action,
   type ActionOf,
@@ -41,8 +52,12 @@ import {
   canTake,
   commandActions,
   type Decision,
+  encounterText,
   itemTargetActions,
   learnMoveActions,
+  meOptionActions,
+  meOptions,
+  mePokemonActions,
   modifierId,
   moveTargets,
   partyFullActions,
@@ -54,7 +69,7 @@ import {
 import { buildObservation, type Observation, type StageInput } from "./observation";
 import { RevealTracker } from "./reveal-tracker";
 
-export type { Action, ActionOf, Decision, ShopItem } from "./decisions";
+export type { Action, ActionOf, Decision, MeOption, ShopItem } from "./decisions";
 
 type SetModeInternal = (
   mode: UiMode,
@@ -93,6 +108,19 @@ export class Driver {
   private rewardScreen: { phase: SelectModifierPhase; args: any[] } | null = null;
   /** The modifier type last picked on the reward screen, for the itemTarget decision that follows. */
   private pickedItem: ModifierType | null = null;
+  /** The MysteryEncounterPhase whose menu was answered: its menu shows again while the option runs. */
+  private meAnswered: Phase | null = null;
+  /** The option last picked on an encounter menu, and the options of that menu found to be dead ends. */
+  private meChosen = -1;
+  private meDeadEnds: { phase: Phase; options: number[] } | null = null;
+  /** The phase in which mePokemon was last answered: a menu that follows in it is the second pick. */
+  private mePickedIn: Phase | null = null;
+  /** The last Pokémon shown in the info box (an encounter's gift Pokémon, for partyFull). */
+  private shownPokemon: Pokemon | null = null;
+  /** The NewBattlePhase after an encounter for which pending timers were run. */
+  private drained: Phase | null = null;
+  /** Set when the game asks for something the driver can't answer; next() throws it. */
+  private failure: Error | null = null;
 
   /** Enemy moves and abilities revealed so far this run, for the observations. */
   public readonly tracker: RevealTracker;
@@ -122,11 +150,24 @@ export class Driver {
       done.then(() => this.onModeSet(mode, args));
       return done;
     };
+
+    const info = game.scene.pokemonInfoContainer;
+    const show = info.show;
+    info.show = (pokemon: Pokemon, ...rest: any[]) => {
+      this.shownPokemon = pokemon;
+      return show.call(info, pokemon, ...rest);
+    };
   }
 
-  /** Run phases until the game waits for the player or the run ends, and return that decision. */
+  /**
+   * Run phases until the game waits for the player or the run ends, and return that decision. Throws if
+   * the game waits for a choice that has no legal action.
+   */
   async next(): Promise<Decision> {
     for (;;) {
+      if (this.failure != null) {
+        throw this.failure;
+      }
       if (this.decision != null) {
         return this.decision;
       }
@@ -134,11 +175,26 @@ export class Driver {
       if (this.running == null) {
         const phase = pm.getCurrentPhase();
         if (phase.is("GameOverPhase")) {
+          // GameOverPhase.start asks the encounter first: some survive a lost battle (The Expert Pokémon
+          // Breeder), and then the phase just ends.
+          const encounter = this.game.scene.currentBattle.mysteryEncounter;
+          if (!phase["isVictory"] && encounter?.onGameOver && !encounter.onGameOver()) {
+            phase.end();
+            continue;
+          }
           // Not started, so the game never reaches the title screen.
           return { kind: "gameOver", victory: phase["isVictory"], legal: [] };
         }
         if (phase.is("EvolutionPhase") && phase !== this.evolutionAsked && phase["canCancel"] && phase.validate()) {
           this.askEvolution(phase);
+          continue;
+        }
+        if (phase.is("NewBattlePhase") && phase !== this.drained && this.inMysteryEncounter()) {
+          // Encounters can leave timers that still read the encounter (The Strong Stuff hides its visuals
+          // 750 ms after the option). The harness's clock runs them 1 ms later in real time, but the driver
+          // gets here without yielding, so let them run before the encounter's wave is replaced.
+          this.drained = phase;
+          await this.drainTimers();
           continue;
         }
         if (phase.is("ScanIvsPhase")) {
@@ -242,7 +298,20 @@ export class Driver {
         if (phase.is("SelectBiomePhase")) {
           this.raiseBiome(args[0]);
         } else if (phase.is("AttemptCapturePhase")) {
-          this.raisePartyFull(phase["fieldIndex"], args[0]);
+          this.raisePartyFull(this.game.scene.getEnemyField()[phase["fieldIndex"]], args[0]);
+        } else if (this.inMysteryEncounter()) {
+          this.onEncounterMenu(phase, args[0]);
+        }
+        break;
+      case UiMode.MYSTERY_ENCOUNTER:
+        if (phase.is("MysteryEncounterPhase") && phase !== this.meAnswered) {
+          this.raiseMysteryEncounter(phase);
+        }
+        break;
+      case UiMode.EGG_HATCH_SUMMARY:
+        // What pressing cancel on the summary of skipped egg hatches does.
+        if (phase.is("EggSummaryPhase")) {
+          phase.end();
         }
         break;
       case UiMode.EVOLUTION_SCENE:
@@ -254,11 +323,19 @@ export class Driver {
     }
   }
 
-  /** Make `decision` the current one. `input` describes it for {@linkcode observe}. */
+  /**
+   * Make `decision` the current one. `input` describes it for {@linkcode observe}. A decision with no legal
+   * action can't be answered, so it makes next() throw instead of waiting forever.
+   */
   private raise(decision: Decision, input: StageInput, answer: Answer): void {
-    this.decision = decision;
-    this.input = input;
-    this.answer = answer;
+    if (decision.legal.length === 0) {
+      const phase = this.game.scene.phaseManager.getCurrentPhase().phaseName;
+      this.failure = new Error(`Decision ${decision.kind} in ${phase} has no legal action`);
+    } else {
+      this.decision = decision;
+      this.input = input;
+      this.answer = answer;
+    }
     this.wake?.();
   }
 
@@ -317,7 +394,11 @@ export class Driver {
       );
     } else if (phase.is("SelectModifierPhase")) {
       this.raiseItemTarget(partyUiMode, args);
-    } else if (phase.is("AttemptCapturePhase") && partyUiMode === PartyUiMode.RELEASE && this.releaseSlot != null) {
+    } else if (
+      (phase.is("AttemptCapturePhase") || this.inMysteryEncounter())
+      && partyUiMode === PartyUiMode.RELEASE
+      && this.releaseSlot != null
+    ) {
       // The release screen after partyFull chose a release: PartyUiHandler.doRelease without the UI.
       const slot = this.releaseSlot;
       this.releaseSlot = null;
@@ -328,6 +409,24 @@ export class Driver {
       this.raise({ kind: "revive", legal: reviveActions() }, { kind: "revive" }, (action: ActionOf<"revive">) =>
         respond(action.partySlot, PartyOption.REVIVE),
       );
+    } else if (partyUiMode === PartyUiMode.SELECT && this.inMysteryEncounter()) {
+      const legal = mePokemonActions(args[3]);
+      if (legal.length === 0 && phase.is("MysteryEncounterPhase")) {
+        // No Pokémon can be picked (The GTS's "Trade an Item" with no held items): cancel, which is all the
+        // player could do, and the menu shows again without that option.
+        this.meDeadEnds = {
+          phase,
+          options: [...(this.meDeadEnds?.phase === phase ? this.meDeadEnds.options : []), this.meChosen],
+        };
+        this.meAnswered = null;
+        respond(this.game.scene.getPlayerParty().length, PartyOption.CANCEL);
+        return;
+      }
+      const decision: Decision = { kind: "mePokemon", encounterType: this.encounterType(), legal };
+      this.raise(decision, { kind: "mePokemon", option: this.meChosen }, (action: ActionOf<"mePokemon">) => {
+        this.mePickedIn = phase;
+        respond(action.partySlot, PartyOption.SELECT);
+      });
     }
   }
 
@@ -368,6 +467,22 @@ export class Driver {
     } else if (phase.is("EvolutionPhase")) {
       // "Pause evolutions?" after a cancelled evolution.
       config.noHandler();
+    } else if (phase.is("EggLapsePhase")) {
+      // "Skip hatching?": hatched Pokémon go to the starter box, not the party, so skip the animations.
+      config.yesHandler();
+    } else if (this.inMysteryEncounter() && config?.yesHandler != null) {
+      // A yes/no prompt of an encounter (Clowning Around: take the clown's ability?).
+      const labels = [i18next.t("menu:yes"), i18next.t("menu:no")];
+      const decision: Decision = {
+        kind: "meSubOption",
+        encounterType: this.encounterType(),
+        labels,
+        legal: labels.map((_, index) => ({ kind: "meSubOption" as const, index })),
+      };
+      const input: StageInput = { kind: "meSubOption", option: this.meChosen, labels };
+      this.raise(decision, input, (action: ActionOf<"meSubOption">) =>
+        action.index === 0 ? config.yesHandler() : config.noHandler(),
+      );
     }
   }
 
@@ -499,9 +614,8 @@ export class Driver {
     });
   }
 
-  /** Caught with a full party. The menu is Summary, Pokédex, Yes (release one), No. */
-  private raisePartyFull(fieldIndex: number, config: OptionSelectModeConfig): void {
-    const pokemon = this.game.scene.getEnemyField()[fieldIndex];
+  /** Caught (or given) with a full party. The menu is Summary, Pokédex, Yes (release one), No. */
+  private raisePartyFull(pokemon: Pokemon, config: OptionSelectModeConfig): void {
     const options = config.options;
     const decision: Decision = { kind: "partyFull", speciesId: pokemon.species.speciesId, legal: partyFullActions() };
     this.raise(decision, { kind: "catch", pokemon }, (action: ActionOf<"release" | "keepParty">) => {
@@ -528,4 +642,86 @@ export class Driver {
       }
     });
   }
+
+  // #region mystery encounters
+
+  /**
+   * Yield to the event loop for a few ticks of the harness's clock (one per ms), which runs every pending
+   * one-shot timer and short chains of them. (The clock also holds looping events, so it is never empty.)
+   */
+  private async drainTimers(): Promise<void> {
+    for (let i = 0; i < 5; i++) {
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+  }
+
+  private inMysteryEncounter(): boolean {
+    return this.game.scene.currentBattle?.isBattleMysteryEncounter() ?? false;
+  }
+
+  private encounterType(): MysteryEncounterType {
+    return this.game.scene.currentBattle.mysteryEncounter!.encounterType;
+  }
+
+  /** The encounter's option menu, read from its UI handler (which already checked the requirements). */
+  private raiseMysteryEncounter(phase: MysteryEncounterPhase): void {
+    const handler = this.game.scene.ui.getHandler() as MysteryEncounterUiHandler;
+    const options: MysteryEncounterOption[] = handler["encounterOptions"];
+    const optionsMeetsReqs: boolean[] = handler["optionsMeetsReqs"];
+    const view = meOptions(options, optionsMeetsReqs);
+    const encounter = this.game.scene.currentBattle.mysteryEncounter!;
+    const { intro, encounterOptionsDialogue: box } = encounter.dialogue;
+    const followUp = phase.optionSelectSettings != null;
+    const decision: Decision = {
+      kind: "mysteryEncounter",
+      encounterType: encounter.encounterType,
+      tier: encounter.encounterTier,
+      followUp,
+      intro: followUp ? [] : (intro ?? []).map(d => encounterText(d.text)),
+      title: encounterText(box?.title),
+      description: encounterText(box?.description),
+      query: encounterText(box?.query),
+      options: view,
+      legal: meOptionActions(view).filter(
+        a => !(this.meDeadEnds?.phase === phase && this.meDeadEnds.options.includes(a.index)),
+      ),
+    };
+    const input: StageInput = { kind: "mysteryEncounter", options, optionsMeetsReqs, followUp };
+    this.raise(decision, input, (action: ActionOf<"meOption">) => {
+      this.meAnswered = phase;
+      this.meChosen = action.index;
+      phase.handleOptionSelect(options[action.index], action.index);
+    });
+  }
+
+  /**
+   * An option menu during an encounter: the full-party menu for a gift Pokémon, or a follow-up menu. The
+   * "Cancel" that ends a menu after a Pokémon pick only goes back to the encounter menu, so it is left out.
+   */
+  private onEncounterMenu(phase: Phase, config: OptionSelectModeConfig): void {
+    const options = config.options;
+    if (options.length === 4 && options[0].label === i18next.t("partyUiHandler:summary")) {
+      this.raisePartyFull(this.shownPokemon!, config);
+      return;
+    }
+    const afterPick = this.mePickedIn === phase;
+    this.mePickedIn = null;
+    const cancel = afterPick && options.length > 1 && options.at(-1)!.label === i18next.t("menu:cancel") ? 1 : 0;
+    const labels = options.map(o => o.label);
+    const decision: Decision = {
+      kind: "meSubOption",
+      encounterType: this.encounterType(),
+      labels,
+      legal: options.slice(0, options.length - cancel).map((_, index) => ({ kind: "meSubOption" as const, index })),
+    };
+    this.raise(decision, { kind: "meSubOption", option: this.meChosen, labels }, (action: ActionOf<"meSubOption">) => {
+      if (afterPick && action.index === options.length - 1) {
+        // The only entry was Cancel: the encounter menu shows again.
+        this.meAnswered = null;
+      }
+      options[action.index].handler();
+    });
+  }
+
+  // #endregion
 }

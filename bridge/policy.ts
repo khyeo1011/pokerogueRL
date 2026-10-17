@@ -8,10 +8,12 @@
 // the visible enemy types; never switches voluntarily, throws balls or runs. Rewards: the first free
 // reward that can be taken (so the item-target and learn-move screens get used), first legal target.
 // New moves replace the weakest known move. First biome, evolutions go ahead, caught Pokémon are not
-// kept over the party.
+// kept over the party. Mystery encounters (issue #8): a preferred option per encounter type
+// (ENCOUNTER_PREFERENCES), else the first legal one; the first legal Pokémon and follow-up entry.
 
 import { BattlerIndex } from "#enums/battler-index";
 import { MoveCategory } from "#enums/move-category";
+import { MysteryEncounterType } from "#enums/mystery-encounter-type";
 import type { Action, ActionOf } from "./decisions";
 import type { Observation, OwnPokemonObs } from "./observation";
 import { exportStaticData, type StaticData } from "./static-data";
@@ -99,11 +101,61 @@ export const defaultPolicy: Policy = (obs, legal) => {
       return { kind: "evolve" };
     case "catch":
       return { kind: "keepParty" };
+    case "mysteryEncounter": {
+      if (!stage.followUp) {
+        const preferred = ENCOUNTER_PREFERENCES[stage.encounterType as MysteryEncounterType]
+          .map(index => legal.find(a => a.kind === "meOption" && a.index === index))
+          .find(a => a !== undefined);
+        if (preferred) {
+          return preferred;
+        }
+      }
+      return legal[0];
+    }
     case "switch":
     case "itemTarget":
     case "biome":
     case "revive":
-    case "mysteryEncounter":
+    case "mePokemon":
+    case "meSubOption":
       return legal[0];
   }
+};
+
+/**
+ * Option indices to try in order, per encounter type. Mostly the safe choice: leave or decline where the
+ * outcome is a gamble, take free rewards where they need no battle. Every type is listed.
+ */
+export const ENCOUNTER_PREFERENCES: Record<MysteryEncounterType, number[]> = {
+  [MysteryEncounterType.MYSTERIOUS_CHALLENGERS]: [0], // the standard battle
+  [MysteryEncounterType.MYSTERIOUS_CHEST]: [1], // leave: opening can KO the strongest Pokémon
+  [MysteryEncounterType.DARK_DEAL]: [1], // refuse
+  [MysteryEncounterType.FIGHT_OR_FLIGHT]: [1, 2], // steal the item, else leave
+  [MysteryEncounterType.SLUMBERING_SNORLAX]: [2, 1], // steal the item, else wait (heals the party)
+  [MysteryEncounterType.TRAINING_SESSION]: [3], // leave
+  [MysteryEncounterType.DEPARTMENT_STORE_SALE]: [1], // vitamin shop
+  [MysteryEncounterType.SHADY_VITAMIN_DEALER]: [1, 2], // the pricey deal (no side effects), else leave
+  [MysteryEncounterType.FIELD_TRIP]: [0],
+  [MysteryEncounterType.SAFARI_ZONE]: [1], // leave
+  [MysteryEncounterType.LOST_AT_SEA]: [0, 1, 2], // a Pokémon helps, else wander
+  [MysteryEncounterType.FIERY_FALLOUT]: [2, 0], // fire types help, else battle
+  [MysteryEncounterType.THE_STRONG_STUFF]: [0],
+  [MysteryEncounterType.THE_POKEMON_SALESMAN]: [1], // refuse
+  [MysteryEncounterType.AN_OFFER_YOU_CANT_REFUSE]: [1, 2], // extort, else leave
+  [MysteryEncounterType.DELIBIRDY]: [0, 1, 2],
+  [MysteryEncounterType.ABSOLUTE_AVARICE]: [1], // reason with it
+  [MysteryEncounterType.A_TRAINERS_TEST]: [1], // refuse: full heal and an egg
+  [MysteryEncounterType.TRASH_TO_TREASURE]: [1], // dig for valuables
+  [MysteryEncounterType.BERRIES_ABOUND]: [1], // race to the bush
+  [MysteryEncounterType.CLOWNING_AROUND]: [1], // remain unprovoked
+  [MysteryEncounterType.PART_TIMER]: [0],
+  [MysteryEncounterType.DANCING_LESSONS]: [1], // learn its dance
+  [MysteryEncounterType.WEIRD_DREAM]: [0],
+  [MysteryEncounterType.THE_WINSTRATE_CHALLENGE]: [1], // refuse: full heal and a Rarer Candy
+  [MysteryEncounterType.TELEPORTING_HIJINKS]: [0], // pay
+  [MysteryEncounterType.BUG_TYPE_SUPERFAN]: [1, 2, 0], // show bug types, else give a bug item, else battle
+  [MysteryEncounterType.FUN_AND_GAMES]: [1], // leave
+  [MysteryEncounterType.UNCOMMON_BREED]: [2, 1, 0], // befriend, else feed, else battle
+  [MysteryEncounterType.GLOBAL_TRADE_SYSTEM]: [3], // leave
+  [MysteryEncounterType.THE_EXPERT_POKEMON_BREEDER]: [0],
 };

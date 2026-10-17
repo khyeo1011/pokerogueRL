@@ -36,7 +36,10 @@
 // |                 |                                          | learnMove: party slot, new move; evolution:  |
 // |                 |                                          | party slot, new species; revive: nothing;    |
 // |                 |                                          | biome: choices; mysteryEncounter: type,      |
-// |                 |                                          | tier, options; catch: the caught Pokémon     |
+// |                 |                                          | tier, intro and description texts, option    |
+// |                 |                                          | labels and tooltips; mePokemon/meSubOption:  |
+// |                 |                                          | type, the option picked (+ menu labels);     |
+// |                 |                                          | catch: the caught Pokémon                    |
 //
 // Never included: enemy IVs, nature, exact stats or HP, moves and abilities not yet revealed, trainer
 // Pokémon not yet sent out, RNG state or seeds, anything about future waves, reward options before the
@@ -50,7 +53,6 @@ import { getLevelTotalExp } from "#data/exp";
 import { BattlerTagType } from "#enums/battler-tag-type";
 import type { BiomeId } from "#enums/biome-id";
 import type { MoveId } from "#enums/move-id";
-import { MysteryEncounterOptionMode } from "#enums/mystery-encounter-option-mode";
 import type { SpeciesId } from "#enums/species-id";
 import { PERMANENT_STATS } from "#enums/stat";
 import type { EnemyPokemon, Pokemon } from "#field/pokemon";
@@ -66,7 +68,9 @@ import {
   type ModifierTypeOption,
   TmModifierType,
 } from "#modifiers/modifier-type";
+import type { MysteryEncounterOption } from "#mystery-encounters/mystery-encounter-option";
 import { NumberHolder } from "#utils/common";
+import { encounterText, meOptions } from "./decisions";
 import type { RevealTracker } from "./reveal-tracker";
 
 // #region Observation types
@@ -231,7 +235,10 @@ export interface RewardOptionObs extends Omit<ItemObs, "count" | "battlesLeft"> 
   upgradeCount: number;
 }
 
+/** An option of a mystery encounter's menu: its button and tooltip, as drawn. */
 export interface MysteryEncounterOptionObs {
+  label: string;
+  tooltip: string;
   /** Greyed out and not selectable: requirements not met. */
   disabled: boolean;
   /** Shown highlighted: a special option whose requirements are met. */
@@ -249,7 +256,23 @@ export type StageObs =
   | { kind: "evolution"; partySlot: number; speciesId: number }
   | { kind: "revive" }
   | { kind: "biome"; choices: number[] }
-  | { kind: "mysteryEncounter"; encounterType: number; tier: number; options: MysteryEncounterOptionObs[] }
+  | {
+      kind: "mysteryEncounter";
+      encounterType: number;
+      tier: number;
+      /** A later menu of the same encounter (the Safari Zone's turns), shown without the intro. */
+      followUp: boolean;
+      /** The intro messages, then the description box. Texts have tokens filled in and markup removed. */
+      intro: string[];
+      title: string;
+      description: string;
+      query: string;
+      options: MysteryEncounterOptionObs[];
+    }
+  /** The party screen an encounter option opened; `option` is the index picked on the encounter menu. */
+  | { kind: "mePokemon"; encounterType: number; option: number }
+  /** A follow-up menu inside an encounter (second pick, menu before the Pokémon, yes/no), by its labels. */
+  | { kind: "meSubOption"; encounterType: number; option: number; labels: string[] }
   | { kind: "catch"; pokemon: OwnPokemonObs };
 
 export interface Observation {
@@ -284,10 +307,20 @@ export type StageInput =
   /** SelectBiomePhase's choices, in the order of the OPTION_SELECT labels. */
   | { kind: "biome"; choices: readonly BiomeId[] }
   /**
-   * MysteryEncounterUiHandler.optionsMeetsReqs, which the UI computes when it shows the options. Not
-   * recomputed here: MysteryEncounterOption.meetsRequirements() draws from the RNG and picks Pokémon.
+   * MysteryEncounterUiHandler's `encounterOptions` (the encounter's options, or a follow-up menu's) and
+   * `optionsMeetsReqs`, which the UI computes when it shows them. Not recomputed here:
+   * MysteryEncounterOption.meetsRequirements() draws from the RNG and picks Pokémon.
    */
-  | { kind: "mysteryEncounter"; optionsMeetsReqs: readonly boolean[] }
+  | {
+      kind: "mysteryEncounter";
+      options: readonly MysteryEncounterOption[];
+      optionsMeetsReqs: readonly boolean[];
+      followUp: boolean;
+    }
+  /** The PARTY screen (PartyUiMode.SELECT) of an encounter, after option `option` of its menu. */
+  | { kind: "mePokemon"; option: number }
+  /** An OPTION_SELECT or yes/no CONFIRM menu of an encounter, after option `option`, with its labels. */
+  | { kind: "meSubOption"; option: number; labels: readonly string[] }
   /** AttemptCapturePhase's Pokémon, when the party is full and the game asks whether to release one. */
   | { kind: "catch"; pokemon: Pokemon };
 
@@ -403,28 +436,38 @@ function buildStage(scene: BattleScene, input: StageInput): StageObs {
       return { kind: "biome", choices: [...input.choices] };
     case "mysteryEncounter": {
       const encounter = scene.currentBattle.mysteryEncounter!;
+      const { intro, encounterOptionsDialogue: box } = encounter.dialogue;
       return {
         kind: "mysteryEncounter",
         encounterType: encounter.encounterType,
         tier: encounter.encounterTier,
+        followUp: input.followUp,
+        intro: input.followUp ? [] : (intro ?? []).map(d => encounterText(d.text)),
+        title: encounterText(box?.title),
+        description: encounterText(box?.description),
+        query: encounterText(box?.query),
         // Same rules as MysteryEncounterUiHandler.displayEncounterOptions().
-        options: encounter.options.map((option, i) => {
-          const meets = input.optionsMeetsReqs[i];
-          const mode = option.optionMode;
-          return {
-            disabled:
-              !meets
-              && (mode === MysteryEncounterOptionMode.DISABLED_OR_DEFAULT
-                || mode === MysteryEncounterOptionMode.DISABLED_OR_SPECIAL),
-            special:
-              option.hasRequirements()
-              && meets
-              && (mode === MysteryEncounterOptionMode.DEFAULT_OR_SPECIAL
-                || mode === MysteryEncounterOptionMode.DISABLED_OR_SPECIAL),
-          };
-        }),
+        options: meOptions([...input.options], [...input.optionsMeetsReqs]).map(o => ({
+          label: o.label,
+          tooltip: o.tooltip,
+          disabled: o.disabled,
+          special: o.special,
+        })),
       };
     }
+    case "mePokemon":
+      return {
+        kind: "mePokemon",
+        encounterType: scene.currentBattle.mysteryEncounter!.encounterType,
+        option: input.option,
+      };
+    case "meSubOption":
+      return {
+        kind: "meSubOption",
+        encounterType: scene.currentBattle.mysteryEncounter!.encounterType,
+        option: input.option,
+        labels: [...input.labels],
+      };
     case "catch":
       // Once caught, its summary screen can be opened from the "party full" prompt.
       return { kind: "catch", pokemon: ownPokemon(scene, input.pokemon) };

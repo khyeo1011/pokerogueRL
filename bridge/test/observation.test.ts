@@ -1,9 +1,9 @@
 // Checks bridge/observation.ts: every stage's observation is plain JSON with only the fields a player can
 // see (ALLOWED_PATHS in observation-helpers.ts), and the reveal tracker only shows what the game revealed.
 // Observations come from real runs through the driver (Driver.observe()), played by the default policy.
-// Stages that rarely come up early in a run, and mystery encounters (which the driver does not handle yet,
-// issue #8), are also built from real game state with the inputs the driver passes. Run with
-// scripts/test_bridge.sh.
+// Stages that rarely come up early in a run, and mystery encounters (bridge/test/mystery-encounters.test.ts
+// checks those through the driver), are also built from real game state with the inputs the driver passes.
+// Run with scripts/test_bridge.sh.
 
 import { modifierTypes } from "#data/data-lists";
 import { AbilityId } from "#enums/ability-id";
@@ -187,14 +187,29 @@ describe("buildObservation", () => {
     const scene = game.scene;
     tracker = new RevealTracker(scene);
     // What MysteryEncounterUiHandler computes when it shows the options.
-    const optionsMeetsReqs = scene.currentBattle.mysteryEncounter!.options.map(o => o.meetsRequirements());
-    const obs = buildObservation(scene, tracker, { kind: "mysteryEncounter", optionsMeetsReqs });
+    const options = scene.currentBattle.mysteryEncounter!.options;
+    const optionsMeetsReqs = options.map(o => o.meetsRequirements());
+    const obs = buildObservation(scene, tracker, { kind: "mysteryEncounter", options, optionsMeetsReqs, followUp: false });
     expectFair(obs);
     expect(obs.stage).toMatchObject({
       kind: "mysteryEncounter",
       encounterType: MysteryEncounterType.FIGHT_OR_FLIGHT,
-      options: optionsMeetsReqs.map(() => ({ disabled: expect.any(Boolean), special: expect.any(Boolean) })),
+      followUp: false,
+      options: optionsMeetsReqs.map(() => ({
+        label: expect.any(String),
+        tooltip: expect.any(String),
+        disabled: expect.any(Boolean),
+        special: expect.any(Boolean),
+      })),
     });
+    for (const input of [
+      { kind: "mePokemon", option: 0 },
+      { kind: "meSubOption", option: 0, labels: ["Yes", "No"] },
+    ] as const) {
+      const sub = buildObservation(scene, tracker, input);
+      expectFair(sub);
+      expect(sub.stage).toMatchObject({ ...input, encounterType: MysteryEncounterType.FIGHT_OR_FLIGHT });
+    }
   });
 });
 
