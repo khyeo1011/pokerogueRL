@@ -18,3 +18,12 @@ RL agents for PokéRogue. Setup and usage are in README.md.
 - Python deps: `uv add <pkg>`. Run with `uv run ...`. Never use pip.
 - Node deps for the bridge come from `pokerogue/` (`corepack pnpm`, run from inside `pokerogue/`).
 - `OBS_DIM` (and the action count) are defined in both `bridge/server.ts` and `src/pokerogue_rl/env.py`. Change both together.
+
+## Git
+
+- Branch from `main` as `<type>/<short-kebab-name>`:
+  - `feature/`: new functionality
+  - `fix/`: bug fixes
+  - `docs/`: documentation and `notes/` only
+  - `chore/`: tooling, CI, tests, dependencies, refactors without behavior changes
+- Never commit directly to `main`.
