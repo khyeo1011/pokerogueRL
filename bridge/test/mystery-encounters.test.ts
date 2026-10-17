@@ -20,8 +20,10 @@ import type { MysteryEncounterUiHandler } from "#ui/mystery-encounter-ui-handler
 import Phaser from "phaser";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { type Decision, Driver } from "../driver";
-import { defaultAction } from "../policy";
+import type { Observation } from "../observation";
+import { defaultPolicy } from "../policy";
 import { startClassicRun } from "../run";
+import { disallowedPaths } from "./observation-helpers";
 import { nextDecision, playUntil } from "./play";
 
 const PARTY = [SpeciesId.LAPRAS, SpeciesId.GENGAR, SpeciesId.ABRA];
@@ -185,6 +187,34 @@ function checkShownAsOnScreen(game: GameManager, decision: Extract<Decision, { k
   }
 }
 
+/** The observation of an encounter decision shows what the decision does (the policy only gets the former). */
+function checkStage(decision: Exclude<Decision, { kind: "gameOver" }>, obs: Observation): void {
+  const { stage } = obs;
+  switch (decision.kind) {
+    case "mysteryEncounter": {
+      const { kind, encounterType, tier, followUp, intro, title, description, query, options } = decision;
+      expect(stage).toEqual({
+        kind,
+        encounterType,
+        tier,
+        followUp,
+        intro,
+        title,
+        description,
+        query,
+        options: options.map(({ labelKey: _, ...shown }) => shown),
+      });
+      break;
+    }
+    case "mePokemon":
+      expect(stage).toMatchObject({ kind: "mePokemon", encounterType: decision.encounterType });
+      break;
+    case "meSubOption":
+      expect(stage).toMatchObject({ kind: "meSubOption", encounterType: decision.encounterType, labels: decision.labels });
+      break;
+  }
+}
+
 /** Boot a run on the wave before `wave` and force encounter `type` on `wave`. */
 async function bootBefore(
   game: GameManager,
@@ -229,6 +259,9 @@ describe("Mystery encounters through the driver", () => {
       if (decision.kind === "gameOver" || game.scene.currentBattle.waveIndex > setup.wave) {
         break;
       }
+      const obs = driver.observe();
+      expect(disallowedPaths(obs)).toEqual([]);
+      checkStage(decision, obs);
       if (decision.kind === "mysteryEncounter" && !decision.followUp && !picked) {
         picked = true;
         game.override.mysteryEncounterChance(0);
@@ -250,7 +283,7 @@ describe("Mystery encounters through the driver", () => {
         driver.act(decision.legal.at(-1)!);
         continue;
       }
-      driver.act(defaultAction(game.scene, decision));
+      driver.act(defaultPolicy(obs, decision.legal));
     }
 
     expect(picked).toBe(true);
@@ -277,7 +310,7 @@ describe("Mystery encounter edge cases", { timeout: 120_000 }, () => {
         return decision;
       }
       expect(decision.kind, `game over on wave ${wave}`).not.toBe("gameOver");
-      driver.act(defaultAction(game.scene, decision as Exclude<Decision, { kind: "gameOver" }>));
+      driver.act(defaultPolicy(driver.observe(), decision.legal));
     }
   }
 

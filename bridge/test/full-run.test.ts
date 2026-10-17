@@ -4,6 +4,7 @@
 //   - Starters at level 100, to reach later waves and their screens (biome forks, evolutions, trainers,
 //     doubles), with the default policy and with a seeded random policy. The random one picks any legal
 //     action, so it also exercises balls, running, switching, the shop, rerolls, releases and cancels.
+// Both policies get each decision's observation (issue #10), which must have only allowed fields.
 // Run with scripts/test_bridge.sh full-run.
 
 import { BattleStyle } from "#enums/battle-style";
@@ -12,9 +13,10 @@ import { SpeciesId } from "#enums/species-id";
 import { GameManager } from "#test/framework/game-manager";
 import Phaser from "phaser";
 import { beforeAll, describe, expect, it } from "vitest";
-import { type Action, type Decision, Driver } from "../driver";
-import { defaultAction } from "../policy";
+import { type Decision, Driver } from "../driver";
+import { defaultPolicy, type Policy } from "../policy";
 import { startClassicRun } from "../run";
+import { disallowedPaths } from "./observation-helpers";
 import { nextDecision } from "./play";
 
 /** Battle styles alternate: Switch (the game's default) asks checkSwitch every wave. */
@@ -33,11 +35,11 @@ const RUNS = [
 const TURN_BUDGET = 5000;
 
 /** A random policy seeded from a string (a small LCG, so runs are repeatable). */
-function randomPolicy(seed: string): (decision: Decision) => Action {
+function randomPolicy(seed: string): Policy {
   let state = [...seed].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
-  return decision => {
+  return (_obs, legal) => {
     state = (state * 1664525 + 1013904223) >>> 0;
-    return decision.legal[state % decision.legal.length];
+    return legal[state % legal.length];
   };
 }
 
@@ -59,9 +61,7 @@ describe("Classic run through the driver", () => {
       }
       await startClassicRun(game, seed, SpeciesId.CHARMANDER, SpeciesId.SQUIRTLE, SpeciesId.BULBASAUR);
       const driver = new Driver(game);
-      const random = randomPolicy(seed);
-      const choose = (d: Exclude<Decision, { kind: "gameOver" }>) =>
-        policy === "random" ? random(d) : defaultAction(game.scene, d);
+      const choose = policy === "random" ? randomPolicy(seed) : defaultPolicy;
       const t0 = performance.now();
 
       const counts: Partial<Record<Decision["kind"], number>> = {};
@@ -77,9 +77,13 @@ describe("Classic run through the driver", () => {
         if (decision.kind === "gameOver" || driver.turns >= TURN_BUDGET) {
           break;
         }
-        driver.act(choose(decision));
+        // Both policies get the observation, so this also checks it at every decision.
+        const obs = driver.observe();
+        expect(disallowedPaths(obs)).toEqual([]);
+        driver.act(choose(obs, decision.legal));
       }
 
+      driver.dispose();
       const seconds = (performance.now() - t0) / 1000;
       const end = decision.kind === "gameOver" ? (decision.victory ? "won" : "game over") : "turn budget ran out";
       const party = game.scene

@@ -12,9 +12,10 @@ import { SpeciesId } from "#enums/species-id";
 import { GameManager } from "#test/framework/game-manager";
 import Phaser from "phaser";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { type Action, type Decision, Driver } from "../driver";
-import { defaultAction } from "../policy";
+import { type Decision, Driver } from "../driver";
+import { defaultPolicy, type Policy } from "../policy";
 import { startClassicRun } from "../run";
+import { disallowedPaths } from "./observation-helpers";
 import { nextDecision } from "./play";
 
 const SEEDS = Number(process.env.ENCOUNTER_RUNS ?? 4);
@@ -32,11 +33,11 @@ const RUNS = (["default", "random"] as const).flatMap(policy =>
 const TURN_BUDGET = 5000;
 
 /** A random policy seeded from a string (a small LCG, so runs are repeatable). */
-function randomPolicy(seed: string): (decision: Decision) => Action {
+function randomPolicy(seed: string): Policy {
   let state = [...seed].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
-  return decision => {
+  return (_obs, legal) => {
     state = (state * 1664525 + 1013904223) >>> 0;
-    return decision.legal[state % decision.legal.length];
+    return legal[state % legal.length];
   };
 }
 
@@ -68,9 +69,7 @@ describe("Classic runs with mystery encounters", () => {
     game.override.startingLevel(100);
     await startClassicRun(game, seed, ...TEAMS[team]);
     const driver = new Driver(game);
-    const random = randomPolicy(seed);
-    const choose = (d: Exclude<Decision, { kind: "gameOver" }>) =>
-      policy === "random" ? random(d) : defaultAction(game.scene, d);
+    const choose = policy === "random" ? randomPolicy(seed) : defaultPolicy;
 
     const encounters: string[] = [];
     const encounterWaves = new Set<number>();
@@ -88,7 +87,9 @@ describe("Classic runs with mystery encounters", () => {
       if (decision.kind === "gameOver" || driver.turns >= TURN_BUDGET) {
         break;
       }
-      driver.act(choose(decision));
+      const obs = driver.observe();
+      expect(disallowedPaths(obs)).toEqual([]);
+      driver.act(choose(obs, decision.legal));
     }
 
     const end = decision.kind === "gameOver" ? (decision.victory ? "won" : "game over") : "turn budget ran out";
