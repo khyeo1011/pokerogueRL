@@ -4,7 +4,7 @@
 import { UiMode } from "#enums/ui-mode";
 import type { GameManager } from "#test/framework/game-manager";
 import type { Decision, Driver } from "../driver";
-import { defaultAction } from "../policy";
+import { defaultPolicy } from "../policy";
 
 /** How long one Driver.next() may take. A whole wave normally takes well under a second. */
 const STUCK_MS = 15_000;
@@ -41,6 +41,6 @@ export async function playUntil<K extends Decision["kind"]>(
     if (decision.kind === "gameOver") {
       throw new Error(`Game over on wave ${game.scene.currentBattle.waveIndex} before a ${kind} decision`);
     }
-    driver.act(defaultAction(game.scene, decision));
+    driver.act(defaultPolicy(driver.observe(), decision.legal));
   }
 }

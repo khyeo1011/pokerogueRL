@@ -17,7 +17,7 @@ import Phaser from "phaser";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { Driver } from "../driver";
 import { buildObservation, type Observation } from "../observation";
-import { RevealTracker } from "../reveal-tracker";
+import type { RevealTracker } from "../reveal-tracker";
 import { startClassicRun } from "../run";
 import { observationDiff } from "./observation-helpers";
 
@@ -186,8 +186,8 @@ describe("observation leak test", () => {
     }
     await startClassicRun(game, seed, ...STARTERS);
     const scene = game.scene;
-    tracker = new RevealTracker(scene);
     const driver = new Driver(game);
+    tracker = driver.tracker;
     for (;;) {
       const decision = await driver.next();
       if (decision.kind === "target") {

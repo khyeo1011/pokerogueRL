@@ -346,5 +346,6 @@ describe("Driver decisions", { timeout: 60_000 }, () => {
     const decision = await playUntil(game, driver, "gameOver");
     expect(decision).toEqual({ kind: "gameOver", victory: false, legal: [] });
     expect(() => driver.act({ kind: "run" })).toThrow(/no pending decision/);
+    expect(() => driver.observe()).toThrow(/no pending decision/);
   });
 });

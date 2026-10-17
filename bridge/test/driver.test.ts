@@ -1,45 +1,21 @@
-// Plays a Classic run through bridge/driver.ts with the same fixed policy as classic-run.test.ts, so
-// their turns/s can be compared: the driver steps phases directly, the smoke test goes through the
-// harness's PhaseInterceptor. Run with scripts/test_bridge.sh.
+// Plays a Classic run through bridge/driver.ts with the same battle choices as classic-run.test.ts (the
+// default policy's), so their turns/s can be compared: the driver steps phases directly, the smoke test
+// goes through the harness's PhaseInterceptor. Run with scripts/test_bridge.sh.
 
 import { BattleType } from "#enums/battle-type";
 import { SpeciesId } from "#enums/species-id";
 import { GameManager } from "#test/framework/game-manager";
 import Phaser from "phaser";
 import { beforeAll, describe, expect, it } from "vitest";
-import { type Action, type Decision, Driver } from "../driver";
-import { defaultAction } from "../policy";
+import { Driver } from "../driver";
+import { defaultPolicy, type Policy } from "../policy";
 
 const WAVES = 10;
 const TURN_BUDGET = 150;
 
-/**
- * Highest-power usable move on the first active enemy; first healthy bench Pokémon; never take rewards.
- * Other decisions get the default policy.
- */
-function policy(game: GameManager, decision: Exclude<Decision, { kind: "gameOver" }>): Action {
-  const scene = game.scene;
-  switch (decision.kind) {
-    case "command": {
-      const pokemon = scene.getPlayerField()[decision.fieldIndex];
-      const moveset = pokemon.getMoveset();
-      const usable = moveset.filter(m => m.isUsable(pokemon)[0]);
-      const move = usable.reduce((a, b) => (b.getMove().power > a.getMove().power ? b : a));
-      return { kind: "move", slot: moveset.indexOf(move) };
-    }
-    case "target":
-      return { kind: "target", target: scene.getEnemyField().find(e => e.isActive(true))!.getBattlerIndex() };
-    case "switch": {
-      const party = scene.getPlayerParty();
-      const slots = scene.currentBattle.getBattlerCount();
-      return { kind: "switch", partySlot: party.findIndex((p, i) => i >= slots && !p.isFainted()) };
-    }
-    case "reward":
-      return { kind: "skipReward" };
-    default:
-      return defaultAction(scene, decision);
-  }
-}
+/** The default policy, but never take rewards (the harness skips them too). */
+const policy: Policy = (obs, legal) =>
+  obs.stage.kind === "reward" ? { kind: "skipReward" } : defaultPolicy(obs, legal);
 
 describe("Classic run (driver)", () => {
   let phaserGame: Phaser.Game;
@@ -78,11 +54,12 @@ describe("Classic run (driver)", () => {
           const enemies = battle.enemyParty.map(p => `${p.name} L${p.level}`).join(", ");
           log.push(`wave ${wave} (${BattleType[battle.battleType]}${battle.double ? " double" : ""}): beat ${enemies}`);
         }
-        driver.act(policy(game, decision));
+        driver.act(policy(driver.observe(), decision.legal));
         decisions++;
       }
     }
     log.push(end);
+    driver.dispose();
 
     const bootSeconds = (tBoot - t0) / 1000;
     const playSeconds = (performance.now() - tBoot) / 1000;

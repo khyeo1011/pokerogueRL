@@ -13,13 +13,19 @@
 // folded into one decision: learnMove answers both "forget a move?" and the summary screen that picks
 // the move, checkSwitch answers "will you switch?" and the party screen, partyFull answers the
 // full-party menu and the release screen. Prompts with no effect on play are answered here, not raised.
+//
+// Each decision comes with its observation (issue #10): raise() takes the StageInput for the decision,
+// built from what the UI mode passed, and observe() turns it into the fair-information observation
+// (bridge/observation.ts) with the driver's RevealTracker. A policy gets only that observation and the
+// legal actions, never the scene. A new decision point passes its StageInput to raise() like the others.
 
 import type { Phase } from "#app/phase";
 import { Command } from "#enums/command";
+import type { MoveId } from "#enums/move-id";
 import { MoveUseMode } from "#enums/move-use-mode";
 import { PartyUiMode } from "#enums/party-ui-mode";
 import { UiMode } from "#enums/ui-mode";
-import { type ModifierTypeOption, PokemonModifierType } from "#modifiers/modifier-type";
+import { type ModifierType, type ModifierTypeOption, PokemonModifierType } from "#modifiers/modifier-type";
 import type { CommandPhase } from "#phases/command-phase";
 import type { EvolutionPhase } from "#phases/evolution-phase";
 import type { ModifierSelectCallback, SelectModifierPhase } from "#phases/select-modifier-phase";
@@ -45,6 +51,8 @@ import {
   shopOptions,
   switchActions,
 } from "./decisions";
+import { buildObservation, type Observation, type StageInput } from "./observation";
+import { RevealTracker } from "./reveal-tracker";
 
 export type { Action, ActionOf, Decision, ShopItem } from "./decisions";
 
@@ -64,6 +72,8 @@ export class Driver {
   private decision: Decision | null = null;
   /** Applies the action chosen for {@linkcode decision}. */
   private answer: Answer | null = null;
+  /** What {@linkcode observe} needs to know about {@linkcode decision}. */
+  private input: StageInput | null = null;
   /** The phase the driver started that has not ended yet. */
   private running: Phase | null = null;
   /** Resolves the promise next() is awaiting, if any. */
@@ -81,8 +91,11 @@ export class Driver {
   private evolutionCancelled: Phase | null = null;
   /** The reward screen's mode arguments, kept to raise it again after a shop purchase. */
   private rewardScreen: { phase: SelectModifierPhase; args: any[] } | null = null;
-  /** The modifier type id last picked on the reward screen, for the itemTarget decision that follows. */
-  private pickedItem = "";
+  /** The modifier type last picked on the reward screen, for the itemTarget decision that follows. */
+  private pickedItem: ModifierType | null = null;
+
+  /** Enemy moves and abilities revealed so far this run, for the observations. */
+  public readonly tracker: RevealTracker;
 
   /** Number of TurnEndPhases started. */
   public turns = 0;
@@ -94,6 +107,7 @@ export class Driver {
    * `classicMode.runToSummon()`, which stops after EncounterPhase ends.
    */
   constructor(private readonly game: GameManager) {
+    this.tracker = new RevealTracker(game.scene);
     const ui = game.scene.ui as unknown as { setModeInternal: SetModeInternal };
 
     game.scene.phaseManager["startCurrentPhase"] = () => {
@@ -166,7 +180,24 @@ export class Driver {
     // Clear first: answering can raise the next decision synchronously.
     this.decision = null;
     this.answer = null;
+    this.input = null;
     answer(action);
+  }
+
+  /**
+   * The observation of the current decision: everything a policy may know when choosing one of its
+   * `legal` actions. Throws if there is no decision or the run is over.
+   */
+  observe(): Observation {
+    if (this.input == null) {
+      throw new Error("Driver.observe called with no pending decision");
+    }
+    return buildObservation(this.game.scene, this.tracker, this.input);
+  }
+
+  /** Stop tracking reveals. Call when done with the run. */
+  dispose(): void {
+    this.tracker.dispose();
   }
 
   /** Turn a finished UI mode change into a decision if the current phase is now waiting for input. */
@@ -223,8 +254,10 @@ export class Driver {
     }
   }
 
-  private raise(decision: Decision, answer: Answer): void {
+  /** Make `decision` the current one. `input` describes it for {@linkcode observe}. */
+  private raise(decision: Decision, input: StageInput, answer: Answer): void {
     this.decision = decision;
+    this.input = input;
     this.answer = answer;
     this.wake?.();
   }
@@ -232,7 +265,7 @@ export class Driver {
   private raiseCommand(phase: CommandPhase): void {
     const fieldIndex = phase.getFieldIndex();
     const decision: Decision = { kind: "command", fieldIndex, legal: commandActions(fieldIndex) };
-    this.raise(decision, (action: ActionOf<"move" | "switch" | "ball" | "run">) => {
+    this.raise(decision, { kind: "command", fieldIndex }, (action: ActionOf<"move" | "switch" | "ball" | "run">) => {
       // If the game still refuses, it shows a message and asks again, which raises a new decision.
       switch (action.kind) {
         case "move":
@@ -260,7 +293,11 @@ export class Driver {
       return;
     }
     const legal = targets.map(target => ({ kind: "target" as const, target }));
-    this.raise({ kind: "target", fieldIndex, moveId, legal }, (action: ActionOf<"target">) => respond([action.target]));
+    this.raise(
+      { kind: "target", fieldIndex, moveId, legal },
+      { kind: "target", fieldIndex, moveId },
+      (action: ActionOf<"target">) => respond([action.target]),
+    );
   }
 
   private onParty(phase: Phase, args: any[]): void {
@@ -274,7 +311,8 @@ export class Driver {
         return;
       }
       // SEND_OUT keeps the phase's own switch type, which is BATON_PASS after Baton Pass.
-      this.raise({ kind: "switch", fieldIndex, legal: switchActions() }, (action: ActionOf<"switch">) =>
+      const decision: Decision = { kind: "switch", fieldIndex, legal: switchActions() };
+      this.raise(decision, { kind: "switch", fieldIndex }, (action: ActionOf<"switch">) =>
         respond(action.partySlot, PartyOption.SEND_OUT),
       );
     } else if (phase.is("SelectModifierPhase")) {
@@ -287,7 +325,7 @@ export class Driver {
       this.game.scene.getPlayerParty().splice(slot, 1)[0].destroy();
       respond(slot, PartyOption.RELEASE);
     } else if (phase.is("RevivalBlessingPhase")) {
-      this.raise({ kind: "revive", legal: reviveActions() }, (action: ActionOf<"revive">) =>
+      this.raise({ kind: "revive", legal: reviveActions() }, { kind: "revive" }, (action: ActionOf<"revive">) =>
         respond(action.partySlot, PartyOption.REVIVE),
       );
     }
@@ -298,9 +336,10 @@ export class Driver {
       // The "skip the reward?" prompt after skipReward.
       config.yesHandler();
     } else if (phase.is("CheckSwitchPhase")) {
+      const fieldIndex: number = phase["fieldIndex"];
       const legal = [{ kind: "stay" as const }, ...switchActions()];
-      const decision: Decision = { kind: "checkSwitch", fieldIndex: phase["fieldIndex"], legal };
-      this.raise(decision, (action: ActionOf<"stay" | "switch">) => {
+      const decision: Decision = { kind: "checkSwitch", fieldIndex, legal };
+      this.raise(decision, { kind: "checkSwitch", fieldIndex }, (action: ActionOf<"stay" | "switch">) => {
         if (action.kind === "switch") {
           this.switchTo = action.partySlot;
           config.yesHandler();
@@ -315,13 +354,10 @@ export class Driver {
         config.yesHandler();
         return;
       }
-      const decision: Decision = {
-        kind: "learnMove",
-        partySlot: phase["partyMemberIndex"],
-        moveId: phase["moveId"],
-        legal: learnMoveActions(),
-      };
-      this.raise(decision, (action: ActionOf<"learnMove" | "skipMove">) => {
+      const partySlot: number = phase["partyMemberIndex"];
+      const moveId: MoveId = phase["moveId"];
+      const decision: Decision = { kind: "learnMove", partySlot, moveId, legal: learnMoveActions() };
+      this.raise(decision, { kind: "learnMove", partySlot, moveId }, (action: ActionOf<"learnMove" | "skipMove">) => {
         this.learning = { phase, forget: action.kind === "learnMove" ? action.forget : null };
         if (action.kind === "learnMove") {
           config.yesHandler();
@@ -378,16 +414,17 @@ export class Driver {
       money: scene.money,
       legal,
     };
-    this.raise(decision, (action: ActionOf<"reward" | "buy" | "reroll" | "skipReward">) => {
+    const input: StageInput = { kind: "reward", options: typeOptions, rerollCost };
+    this.raise(decision, input, (action: ActionOf<"reward" | "buy" | "reroll" | "skipReward">) => {
       switch (action.kind) {
         case "reward":
-          this.pickedItem = modifierId(typeOptions[action.index].type);
+          this.pickedItem = typeOptions[action.index].type;
           respond(1, action.index);
           break;
         case "buy": {
           // SelectModifierPhase.selectShopModifierOption: with two shop rows, rowCursor 3 is the first.
           const index = action.index;
-          this.pickedItem = modifierId(shop[index].type);
+          this.pickedItem = shop[index].type;
           if (shop.length <= SHOP_OPTIONS_ROW_LIMIT) {
             respond(2, index);
           } else if (index < SHOP_OPTIONS_ROW_LIMIT) {
@@ -432,7 +469,9 @@ export class Driver {
   private raiseItemTarget(partyUiMode: PartyUiMode, args: any[]): void {
     const [, , respond, selectFilter, moveSelectFilter] = args;
     const legal = itemTargetActions(partyUiMode, selectFilter, moveSelectFilter);
-    this.raise({ kind: "itemTarget", item: this.pickedItem, legal }, (action: ActionOf<"itemTarget">) => {
+    const type = this.pickedItem!;
+    const decision: Decision = { kind: "itemTarget", item: modifierId(type), legal };
+    this.raise(decision, { kind: "itemTarget", type }, (action: ActionOf<"itemTarget">) => {
       switch (partyUiMode) {
         case PartyUiMode.SPLICE:
           respond(action.partySlot, action.fuseWith);
@@ -455,17 +494,17 @@ export class Driver {
   private raiseBiome(config: OptionSelectModeConfig): void {
     const biomes = config.options.map(o => biomeByName(o.label));
     const legal = biomes.map(biome => ({ kind: "biome" as const, biome }));
-    this.raise({ kind: "biome", biomes, legal }, (action: ActionOf<"biome">) => {
+    this.raise({ kind: "biome", biomes, legal }, { kind: "biome", choices: biomes }, (action: ActionOf<"biome">) => {
       config.options[biomes.indexOf(action.biome)].handler();
     });
   }
 
   /** Caught with a full party. The menu is Summary, Pokédex, Yes (release one), No. */
   private raisePartyFull(fieldIndex: number, config: OptionSelectModeConfig): void {
-    const speciesId = this.game.scene.getEnemyField()[fieldIndex].species.speciesId;
+    const pokemon = this.game.scene.getEnemyField()[fieldIndex];
     const options = config.options;
-    const decision: Decision = { kind: "partyFull", speciesId, legal: partyFullActions() };
-    this.raise(decision, (action: ActionOf<"release" | "keepParty">) => {
+    const decision: Decision = { kind: "partyFull", speciesId: pokemon.species.speciesId, legal: partyFullActions() };
+    this.raise(decision, { kind: "catch", pokemon }, (action: ActionOf<"release" | "keepParty">) => {
       if (action.kind === "release") {
         this.releaseSlot = action.partySlot;
         options.at(-2)!.handler();
@@ -478,13 +517,12 @@ export class Driver {
   /** Asked before the phase starts: once started, the evolution plays by itself. */
   private askEvolution(phase: EvolutionPhase): void {
     this.evolutionAsked = phase;
-    const decision: Decision = {
-      kind: "evolution",
-      partySlot: this.game.scene.getPlayerParty().indexOf(phase["pokemon"]),
-      speciesId: phase["evolution"]!.speciesId,
-      legal: [{ kind: "evolve" }, { kind: "cancelEvolution" }],
-    };
-    this.raise(decision, (action: ActionOf<"evolve" | "cancelEvolution">) => {
+    const partySlot = this.game.scene.getPlayerParty().indexOf(phase["pokemon"]);
+    const speciesId = phase["evolution"]!.speciesId;
+    const legal: ActionOf<"evolve" | "cancelEvolution">[] = [{ kind: "evolve" }, { kind: "cancelEvolution" }];
+    const decision: Decision = { kind: "evolution", partySlot, speciesId, legal };
+    const input: StageInput = { kind: "evolution", partySlot, speciesId };
+    this.raise(decision, input, (action: ActionOf<"evolve" | "cancelEvolution">) => {
       if (action.kind === "cancelEvolution") {
         this.evolutionCancelled = phase;
       }
