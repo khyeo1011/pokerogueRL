@@ -5,7 +5,7 @@ RL agents for PokéRogue. Setup and usage are in README.md.
 ## Where things go
 
 - `pokerogue/`: upstream game, a git submodule. Treat it as read-only: no edits, no commits. Game-side code we write goes in `bridge/`.
-- `bridge/`: TypeScript, one headless game per process, newline-delimited JSON over TCP. Currently a stub. The real version should reuse `pokerogue/`'s vitest harness (jsdom + `test/setup/*` + `#alias` paths in its `tsconfig.json`).
+- `bridge/`: TypeScript, one headless game per process, on `pokerogue/`'s vitest harness (jsdom + `test/setup/*` + `#alias` paths in its `tsconfig.json`). `driver.ts` steps the real game and raises decisions (`decisions.ts`), `observation.ts` is the fair-information view a policy gets, and `policy.ts` holds the policies. `server.ts` (newline-delimited JSON over TCP) is still a stub that serves dummy episodes.
 - `src/pokerogue_rl/`: Python package. `env.py` is the Gymnasium env (bridge client), `train.py` is the training entry point. New modules (observation encoding, policies, eval) go here.
 - `bridge/test/`: vitest tests on pokerogue's harness, run by `scripts/test_bridge.sh` (CI: `.github/workflows/bridge.yml`). `bridge/tsconfig.json` and the `bridge/node_modules` symlink make `#alias` and bare imports resolve from outside `pokerogue/`; see `notes/2026-10-16-headless-classic-run.md`.
 - `scripts/`: shell entry points only (setup, start bridges, train, test bridge). Keep the logic in Python/TS.
