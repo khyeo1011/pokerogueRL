@@ -1,5 +1,5 @@
 // Full Classic runs through the driver: each must reach game over or a win without getting stuck at any
-// screen (issue #7). Mystery encounters are turned off until the driver handles them (issue #8).
+// screen (issue #7), mystery encounters included (issue #8, at the game's own rate from wave 10).
 //   - The real game (startClassicRun) with the default policy (bridge/policy.ts).
 //   - Starters at level 100, to reach later waves and their screens (biome forks, evolutions, trainers,
 //     doubles), with the default policy and with a seeded random policy. The random one picks any legal
@@ -7,6 +7,7 @@
 // Run with scripts/test_bridge.sh full-run.
 
 import { BattleStyle } from "#enums/battle-style";
+import { MysteryEncounterType } from "#enums/mystery-encounter-type";
 import { SpeciesId } from "#enums/species-id";
 import { GameManager } from "#test/framework/game-manager";
 import Phaser from "phaser";
@@ -57,7 +58,6 @@ describe("Classic run through the driver", () => {
         game.override.startingLevel(level);
       }
       await startClassicRun(game, seed, SpeciesId.CHARMANDER, SpeciesId.SQUIRTLE, SpeciesId.BULBASAUR);
-      game.override.mysteryEncounterChance(0);
       const driver = new Driver(game);
       const random = randomPolicy(seed);
       const choose = (d: Exclude<Decision, { kind: "gameOver" }>) =>
@@ -65,10 +65,15 @@ describe("Classic run through the driver", () => {
       const t0 = performance.now();
 
       const counts: Partial<Record<Decision["kind"], number>> = {};
+      const encounters: string[] = [];
       let decision: Decision;
       for (;;) {
         decision = await nextDecision(game, driver);
         counts[decision.kind] = (counts[decision.kind] ?? 0) + 1;
+        const wave = game.scene.currentBattle.waveIndex;
+        if (decision.kind === "mysteryEncounter" && !decision.followUp && !encounters.at(-1)?.endsWith(`@${wave}`)) {
+          encounters.push(`${MysteryEncounterType[decision.encounterType]}@${wave}`);
+        }
         if (decision.kind === "gameOver" || driver.turns >= TURN_BUDGET) {
           break;
         }
@@ -84,7 +89,8 @@ describe("Classic run through the driver", () => {
       console.info(
         `\n=== ${seed} (${policy} policy, level ${level || "real"}, ${BattleStyle[style]}) ===\n`
           + `${end} on wave ${game.scene.currentBattle.waveIndex}; ${driver.turns} turns in ${seconds.toFixed(1)}s\n`
-          + `party: ${party}\ndecisions: ${JSON.stringify(counts)}\n`,
+          + `party: ${party}\ndecisions: ${JSON.stringify(counts)}\n`
+          + `mystery encounters (${encounters.length}): ${encounters.join(" ")}\n`,
       );
       expect(decision.kind).toBe("gameOver");
     },
