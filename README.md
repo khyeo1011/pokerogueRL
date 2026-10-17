@@ -10,7 +10,7 @@ train.py ── SubprocVecEnv ──┬── PokeRogueEnv ──TCP:7700── 
                             └── ...
 ```
 
-> **Status:** the bridge is a stub that serves dummy episodes (action 0 earns reward), so the pipeline can be tested end to end. The real game is not wired in yet.
+> **Status:** the real game runs headlessly in the bridge's driver (`bridge/driver.ts`): every decision point, mystery encounters, observations, a scripted default policy, and stall detection. `scripts/run_games.sh` plays it in batches. The TCP server (`bridge/server.ts`) is still a stub that serves dummy episodes (action 0 earns reward), so the training pipeline can be tested end to end, but it doesn't serve the real game yet.
 
 ## Requirements
 
@@ -57,6 +57,16 @@ scripts/run_games.sh 160 4
 Each run writes one JSON line (seed, team, outcome, waves, turns, timings, the stall report if the driver
 truncated it) to `runs/games-<timestamp>/runs.jsonl`, and a summary goes to `summary.json`. See
 `notes/2026-10-17-stall-detection.md`.
+
+Add `--level 100` to start the starters at level 100: runs then last ~90 waves instead of ~9.
+
+## Throughput
+
+One bridge process plays the real game at about 170 env steps (decisions) per second, boot included:
+~7,500 games per hour of today's short runs. Speed per process holds up to 16 processes on a 16-core
+machine, so 8 processes give ~1,340 env steps/s, ~4.8 M per hour, before policy and TCP costs. A
+process slows down as it plays more waves (half speed after ~5,000), so restart long-lived ones. See
+`notes/2026-10-17-throughput.md`.
 
 ## Layout
 
