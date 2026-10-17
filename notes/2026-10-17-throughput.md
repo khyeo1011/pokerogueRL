@@ -119,7 +119,7 @@ processes start at once. Booting a run (`new GameManager`, title screen, starter
 
 ## Outcomes
 
-These batches were all game over except 6 seeds that end as `truncated` every time they are played: 5
+These batches were all game over except 7 seeds that end as `truncated` every time they are played: 6
 `noLegalAction` and 1 `crash`, all caught and logged by the driver, none lost and no process killed. Both
 are upstream problems: a player Pokémon that faints along with the last enemy leaves a forced switch
 that runs in the next battle, a double one, where the party screen offers no Pokémon to send out
