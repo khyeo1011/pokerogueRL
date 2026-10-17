@@ -8,7 +8,10 @@ can't interrupt code that never returns), its current run is recorded as lost, a
 rest of its chunk goes on in a new process. The lines are merged into `runs.jsonl`, and
 a summary is printed and saved as `summary.json`, in the output directory.
 
-Usage: scripts/run_games.sh <runs> [processes] [--prefix P] [--start N] [--out DIR]
+Throughput (issue #11) is summarized too: per worker while it plays (boot included), the
+time between runs in a process, each process's startup, and the batch as a whole.
+
+Usage: scripts/run_games.sh <runs> [processes] [--prefix P] [--start N] [--level L] [--out DIR]
 """
 
 import argparse
@@ -20,6 +23,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,12 +38,13 @@ def count_lines(path: Path) -> int:
     return len(path.read_text().splitlines()) if path.exists() else 0
 
 
-def launch(prefix: str, start: int, count: int, out: Path, log: Path):
-    """Start a batch runner process for seeds `prefix-start ..`."""
+def launch(prefix: str, start: int, count: int, level: int, out: Path, log: Path):
+    """Start a batch runner process for seeds `prefix-start ..` (starters at `level`, 0: real)."""
     env = os.environ | {
         "BATCH_PREFIX": prefix,
         "BATCH_START": str(start),
         "BATCH_COUNT": str(count),
+        "BATCH_LEVEL": str(level),
         "BATCH_OUT": str(out),
         "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0",
     }
@@ -53,14 +58,19 @@ def launch(prefix: str, start: int, count: int, out: Path, log: Path):
 
 
 def play_chunk(
-    out: Path, prefix: str, start: int, count: int, k: int, stall_s: float
-) -> list[int]:
-    """Play one chunk to the end, restarting past stuck runs. Returns exit codes."""
+    out: Path, prefix: str, start: int, count: int, level: int, k: int, stall_s: float
+) -> tuple[list[int], list[float]]:
+    """Play one chunk to the end, restarting past stuck runs.
+
+    Returns the processes' exit codes, and their startup times in seconds (launch to the
+    start of their first run).
+    """
     path = out / f"chunk-{k}.jsonl"
-    codes = []
+    codes, startups = [], []
     while (done := count_lines(path)) < count:
         log = out / f"chunk-{k}-{len(codes)}.log"
-        proc = launch(prefix, start + done, count - done, path, log)
+        launched = time.time()
+        proc = launch(prefix, start + done, count - done, level, path, log)
         seen, last, killed = done, time.monotonic(), False
         while proc.poll() is None:
             time.sleep(1)
@@ -71,6 +81,9 @@ def play_chunk(
                 proc.wait()
                 killed = True
         codes.append(proc.returncode)
+        first = path.read_text().splitlines()[done:][:1] if path.exists() else []
+        if first and "startedAt" in (record := json.loads(first[0])):
+            startups.append(round(record["startedAt"] / 1000 - launched, 2))
         if (n := count_lines(path)) >= count:
             break
         # The process stopped before the chunk's end: lose the run it was playing.
@@ -84,7 +97,7 @@ def play_chunk(
             ]
         with path.open("a") as f:
             f.writelines(json.dumps(r) + "\n" for r in lost)
-    return codes
+    return codes, startups
 
 
 def spread(values: list[float]) -> dict:
@@ -96,6 +109,35 @@ def spread(values: list[float]) -> dict:
         "median": statistics.median(values),
         "mean": round(statistics.fmean(values), 1),
         "max": max(values),
+    }
+
+
+def between_runs(records: list[dict]) -> list[int]:
+    """Ms from one run's end to the next run's start, for consecutive runs of one process."""
+    return [
+        b["startedAt"] - (a["startedAt"] + a["bootMs"] + a["wallMs"])
+        for a, b in pairwise(records)
+        if "startedAt" in a and "startedAt" in b
+    ]
+
+
+def throughput(played: list[dict]) -> dict:
+    """Rates of one worker while it plays: per second (or hour) of boot + play time.
+
+    An env step is a decision. The `play` rates leave boot out.
+    """
+    if not played:
+        return {}
+    play = sum(r["wallMs"] for r in played) / 1000
+    busy = play + sum(r["bootMs"] for r in played) / 1000
+    turns = sum(r["turns"] for r in played)
+    decisions = sum(r["decisions"] for r in played)
+    return {
+        "gamesPerHour": round(3600 * len(played) / busy),
+        "turnsPerSecond": round(turns / busy, 1),
+        "decisionsPerSecond": round(decisions / busy, 1),
+        "playTurnsPerSecond": round(turns / play, 1),
+        "playDecisionsPerSecond": round(decisions / play, 1),
     }
 
 
@@ -128,6 +170,7 @@ def summarize(records: list[dict]) -> dict:
         "bootMs": spread([r["bootMs"] for r in played]),
         "mysteryEncounters": sum(encounters.values()),
         "mysteryEncounterTypes": dict(encounters.most_common()),
+        "perWorker": throughput(played),
     }
 
 
@@ -138,6 +181,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--prefix", default="batch", help="seeds are <prefix>-<n>")
     parser.add_argument("--start", type=int, default=0, help="first n")
     parser.add_argument("--chunk", type=int, default=100, help="max runs per process")
+    parser.add_argument(
+        "--level", type=int, default=0, help="starters' level (0: the real game's)"
+    )
     parser.add_argument("--stall-seconds", type=float, default=420)
     parser.add_argument("--out", type=Path, help="default runs/games-<timestamp>")
     args = parser.parse_args(argv)
@@ -151,26 +197,50 @@ def main(argv: list[str] | None = None) -> None:
     with ThreadPoolExecutor(args.processes) as pool:
         futures = [
             pool.submit(
-                play_chunk, out, args.prefix, args.start + o, n, k, args.stall_seconds
+                play_chunk,
+                out,
+                args.prefix,
+                args.start + o,
+                n,
+                args.level,
+                k,
+                args.stall_seconds,
             )
             for k, (o, n) in enumerate(work)
         ]
-        codes = [c for f in futures for c in f.result()]
+        results = [f.result() for f in futures]
     elapsed = time.monotonic() - t0
+    codes = [c for cs, _ in results for c in cs]
+    startups = [s for _, ss in results for s in ss]
 
-    lines = [
-        line
+    per_chunk = [
+        [
+            json.loads(line)
+            for line in (out / f"chunk-{k}.jsonl").read_text().splitlines()
+        ]
         for k in range(len(work))
-        for line in (out / f"chunk-{k}.jsonl").read_text().splitlines()
     ]
-    (out / "runs.jsonl").write_text("".join(f"{line}\n" for line in lines))
-    summary = summarize([json.loads(line) for line in lines])
+    records = [r for rs in per_chunk for r in rs]
+    (out / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+    summary = summarize(records)
+    played = [r for r in records if r["outcome"] != "lost"]
     summary |= {
+        "level": args.level,
         "processes": args.processes,
         "chunks": len(work),
         "exitCodes": dict(Counter(codes)),
         "elapsedS": round(elapsed, 1),
-        "runsPerMinute": round(len(lines) / elapsed * 60, 1),
+        "runsPerMinute": round(len(records) / elapsed * 60, 1),
+        "betweenRunsMs": spread([g for rs in per_chunk for g in between_runs(rs)]),
+        "processStartupS": spread(startups),
+        # The whole batch, process startup and the last stragglers included.
+        "aggregate": {
+            "gamesPerHour": round(3600 * len(played) / elapsed),
+            "turnsPerSecond": round(sum(r["turns"] for r in played) / elapsed, 1),
+            "decisionsPerSecond": round(
+                sum(r["decisions"] for r in played) / elapsed, 1
+            ),
+        },
     }
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))
