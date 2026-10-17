@@ -51,9 +51,11 @@ Runs are saved to `runs/<timestamp>/model.zip`. Set `BASE_PORT` (in both termina
 |---|---|
 | `pokerogue/` | Upstream game (git submodule, pinned commit). Don't edit it; see `CLAUDE.md`. |
 | `bridge/` | TypeScript bridge: runs a headless game and serves it over TCP |
+| `bridge/test/` | Vitest tests on pokerogue's harness (`scripts/test_bridge.sh`) |
 | `src/pokerogue_rl/env.py` | Gymnasium env (client for one bridge) |
 | `src/pokerogue_rl/train.py` | Training entry point (`pokerogue-train`) |
-| `scripts/` | `setup.sh`, `start_server.sh`, `train.sh` |
+| `scripts/` | `setup.sh`, `start_server.sh`, `train.sh`, `test_bridge.sh` |
+| `notes/` | Findings and investigation write-ups |
 | `runs/` | Training outputs (gitignored) |
 
 ## Updating PokéRogue
