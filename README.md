@@ -1,0 +1,65 @@
+# pokerogueRL
+
+Reinforcement learning agents for [PokéRogue](https://github.com/pagefaultgames/pokerogue).
+
+The game runs headlessly in Node, one process per environment (the **bridge**). Python training code talks to each bridge over a local TCP socket via a Gymnasium env.
+
+```
+train.py ── SubprocVecEnv ──┬── PokeRogueEnv ──TCP:7700── bridge/server.ts
+                            ├── PokeRogueEnv ──TCP:7701── bridge/server.ts
+                            └── ...
+```
+
+> **Status:** the bridge is a stub that serves dummy episodes (action 0 earns reward), so the pipeline can be tested end to end. The real game is not wired in yet.
+
+## Requirements
+
+- [uv](https://docs.astral.sh/uv/)
+- Python 3.14 (uv uses the system interpreter)
+- Node ≥ 24.9 with corepack (pnpm 10.34.5 is fetched automatically from `pokerogue/package.json`)
+- Optional: an NVIDIA GPU. The default torch wheel is built for CUDA 13.
+
+## Setup
+
+```bash
+git clone --recurse-submodules <this repo>   # or: git submodule update --init --recursive
+cd pokerogueRL
+scripts/setup.sh
+```
+
+`setup.sh` initializes the `pokerogue` submodule (and its `assets`/`locales` submodules), runs `pnpm install` inside it, and runs `uv sync`. It is safe to re-run.
+
+## Running
+
+In one terminal, start N bridge processes on ports `7700 .. 7700+N-1`:
+
+```bash
+scripts/start_server.sh 8
+```
+
+In another terminal, train with the same N:
+
+```bash
+scripts/train.sh 8 --timesteps 1000000
+```
+
+Runs are saved to `runs/<timestamp>/model.zip`. Set `BASE_PORT` (in both terminals) to use a different port range. `scripts/train.sh N --help` lists all training flags.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `pokerogue/` | Upstream game (git submodule, pinned commit). Don't edit it; see `CLAUDE.md`. |
+| `bridge/` | TypeScript bridge: runs a headless game and serves it over TCP |
+| `src/pokerogue_rl/env.py` | Gymnasium env (client for one bridge) |
+| `src/pokerogue_rl/train.py` | Training entry point (`pokerogue-train`) |
+| `scripts/` | `setup.sh`, `start_server.sh`, `train.sh` |
+| `runs/` | Training outputs (gitignored) |
+
+## Updating PokéRogue
+
+```bash
+git -C pokerogue fetch origin main && git -C pokerogue checkout <commit>
+git add pokerogue && git commit -m "Bump pokerogue"
+scripts/setup.sh
+```
