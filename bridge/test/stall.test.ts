@@ -191,6 +191,25 @@ describe("stall detection", () => {
     driver.dispose();
   });
 
+  // An upstream softlock: the lead faints with the last enemy (Struggle recoil, wave 1), the forced switch
+  // FaintPhase queued runs in the next battle, a double one, where party slot 1 counts as a field slot. The
+  // party screen offers no Pokémon to send out and can't be cancelled.
+  it("ends a run with no legal switch as truncated", async () => {
+    const seed = "tp-226";
+    const game = new GameManager(phaserGame);
+    await startClassicRun(game, seed, ...randomTeam(seed));
+    const driver = new Driver(game);
+    const { decision, logged } = await play(driver);
+    expect(decision).toMatchObject({
+      kind: "truncated",
+      reason: "noLegalAction",
+      stall: { wave: 2, phase: "SwitchPhase", lastDecision: "reward" },
+    });
+    expect(game.scene.currentBattle.double).toBe(true);
+    expect(logged).toEqual([expect.objectContaining({ event: "truncated", reason: "noLegalAction" })]);
+    driver.dispose();
+  });
+
   // This run's lead could only remember Bide, which is unimplemented: picking it with the Memory Mushroom
   // brought the reward screen back unchanged, and the default policy picked it forever (a noProgress
   // truncation). Unimplemented moves are no longer legal targets (bridge/decisions.ts).
