@@ -7,6 +7,7 @@
 import { MAX_TERAS_PER_ARENA } from "#app/constants";
 import { globalScene } from "#app/global-scene";
 import { speciesDataRegistry } from "#app/global-species-data-registry";
+import { allMoves } from "#data/data-lists";
 import { getDailyEventSeedBoss } from "#data/daily-run";
 import { isDailyFinalBoss } from "#data/daily-seed-utils";
 import { AbilityId } from "#enums/ability-id";
@@ -397,7 +398,13 @@ export function itemTargetActions(
           .filter(move => (moveSelectFilter?.(pokemon.moveset[move]) ?? null) === null)
           .map(move => ({ kind: "itemTarget", partySlot, move }));
       case PartyUiMode.REMEMBER_MOVE_MODIFIER:
-        return pokemon.getLearnableLevelMoves().map((_, move) => ({ kind: "itemTarget", partySlot, move }));
+        // An unimplemented move (shown with "(N)") is offered, but LearnMovePhase ends without teaching it
+        // and the reward screen comes back unchanged: picking it again and again loops forever.
+        return pokemon
+          .getLearnableLevelMoves()
+          .map(([, moveId], move) => ({ moveId, move }))
+          .filter(({ moveId }) => !allMoves[moveId].isUnimplemented)
+          .map(({ move }) => ({ kind: "itemTarget", partySlot, move }));
       default:
         return [{ kind: "itemTarget", partySlot }];
     }
