@@ -1,13 +1,14 @@
 // Stall detection (issue #9): runs that can't finish end as a `truncated` decision with a stall report,
 // logged as one JSON line, and the next run in the same process plays normally. Each stall is made on
 // purpose: a phase that never ends, a phase loop with no decisions, a screen answered the same way forever,
-// a stalemate that only a turn cap ends, and game code that throws. Also two runs that used to stall or
-// crash and now play to the end.
+// a stalemate that only a turn cap ends, game code that throws, and a screen with no legal action. Also runs
+// that used to stall or crash and now play to the end.
 // Run with scripts/test_bridge.sh stall.
 
 import { globalScene } from "#app/global-scene";
 import { MoveId } from "#enums/move-id";
 import { SpeciesId } from "#enums/species-id";
+import { SwitchType } from "#enums/switch-type";
 import { UiMode } from "#enums/ui-mode";
 import { CommandPhase } from "#phases/command-phase";
 import { TurnEndPhase } from "#phases/turn-end-phase";
@@ -173,40 +174,95 @@ describe("stall detection", () => {
     driver.dispose();
   });
 
-  // An upstream crash: both player Pokémon of a double battle faint with the last enemy, the switch that
-  // FaintPhase queued for field slot 1 runs in the next (single) battle, and the summoned Pokémon has no
-  // battler index (PostSummonPhasePriorityQueue, "reading 'getAbilityPriorities'").
-  it("ends a run that crashes in game code as truncated", async () => {
-    const seed = "big-1951";
+  it("ends a run with no legal action as truncated", async () => {
     const game = new GameManager(phaserGame);
-    await startClassicRun(game, seed, ...randomTeam(seed));
-    const driver = new Driver(game);
-    const { decision } = await play(driver);
-    expect(decision).toMatchObject({
-      kind: "truncated",
-      reason: "crash",
-      stall: { wave: 7, phase: "SwitchSummonPhase", lastDecision: "switch" },
-    });
-    expect(decision.kind === "truncated" && decision.stall.detail).toMatch(/getAbilityPriorities/);
-    driver.dispose();
-  });
-
-  // An upstream softlock: the lead faints with the last enemy (Struggle recoil, wave 1), the forced switch
-  // FaintPhase queued runs in the next battle, a double one, where party slot 1 counts as a field slot. The
-  // party screen offers no Pokémon to send out and can't be cancelled.
-  it("ends a run with no legal switch as truncated", async () => {
-    const seed = "tp-226";
-    const game = new GameManager(phaserGame);
-    await startClassicRun(game, seed, ...randomTeam(seed));
+    await startClassicRun(game, "stall-no-action", SpeciesId.CHARMANDER);
+    // A party screen to switch the only Pokémon: nothing to send out, and the driver offers no cancel.
+    game.scene.phaseManager.unshiftNew("SwitchPhase", SwitchType.SWITCH, 0, false, true);
     const driver = new Driver(game);
     const { decision, logged } = await play(driver);
     expect(decision).toMatchObject({
       kind: "truncated",
       reason: "noLegalAction",
-      stall: { wave: 2, phase: "SwitchPhase", lastDecision: "reward" },
+      stall: { wave: 1, phase: "SwitchPhase", detail: "switch in SwitchPhase" },
     });
-    expect(game.scene.currentBattle.double).toBe(true);
     expect(logged).toEqual([expect.objectContaining({ event: "truncated", reason: "noLegalAction" })]);
+    driver.dispose();
+  });
+
+  // Issue #51: the lead faints with the last enemy (Struggle recoil, wave 1), and the forced switch FaintPhase
+  // queued runs in the next battle, a double one, where party slot 1 counts as a field slot. The party screen
+  // offers nothing to send out and can't be cancelled, so this used to end as noLegalAction. The driver now
+  // answers with a field slot, and wave 2 sends out the Pokémon left.
+  it("plays on after a forced switch left over into a double battle", async () => {
+    const seed = "tp-226";
+    const game = new GameManager(phaserGame);
+    await startClassicRun(game, seed, ...randomTeam(seed));
+    const driver = new Driver(game);
+    const { decision } = await play(driver);
+    expect(decision.kind).toBe("gameOver");
+    expect(game.scene.currentBattle.waveIndex).toBe(2);
+    expect(game.scene.currentBattle.double).toBe(true);
+    // Wave 2 was fought, not ended on the party screen.
+    expect(driver.waveTurns).toBeGreaterThan(0);
+    driver.dispose();
+  });
+
+  // Issue #51, the reverse: both player Pokémon of a double battle faint with the last enemy, and the switch
+  // FaintPhase queued for field slot 1 runs in the next battle, a single one, where SwitchSummonPhase crashed
+  // (PostSummonPhasePriorityQueue, "reading 'getAbilityPriorities'", wave 7).
+  it("plays on after a forced switch left over into a single battle", async () => {
+    const seed = "big-1951";
+    const game = new GameManager(phaserGame);
+    await startClassicRun(game, seed, ...randomTeam(seed));
+    const driver = new Driver(game);
+    const { decision } = await play(driver);
+    expect(decision.kind).toBe("gameOver");
+    expect(game.scene.currentBattle.waveIndex).toBeGreaterThan(7);
+    driver.dispose();
+  });
+
+  // Issue #51: a transformed enemy (Ditto) recalled when The Expert Pokémon Breeder's battle was lost on wave
+  // 92 was destroyed while its assets reloaded, and the load's playAnim() rejected (EnemyPokemon.playSprite,
+  // "reading 'play'"). bridge/run.ts drops that error, as a browser would.
+  it("plays on after an enemy is destroyed while its assets load", { timeout: 120_000 }, async () => {
+    const seed = "tp100-324";
+    const game = new GameManager(phaserGame);
+    game.override.startingLevel(100);
+    await startClassicRun(game, seed, ...randomTeam(seed));
+    const driver = new Driver(game);
+    const { decision } = await play(driver);
+    expect(decision.kind).toBe("gameOver");
+    expect(game.scene.currentBattle.waveIndex).toBeGreaterThan(92);
+    driver.dispose();
+  });
+
+  // Found by a 10,000-run level-100 batch: an enemy Tatsugiri's Commander animation on wave 74 read the
+  // frame of a mock sprite, which has none (PokemonAnimPhase, "reading 'name'"). The driver skips it.
+  it("plays on after a Commander animation", { timeout: 120_000 }, async () => {
+    const seed = "hunt100-2727";
+    const game = new GameManager(phaserGame);
+    game.override.startingLevel(100);
+    await startClassicRun(game, seed, ...randomTeam(seed));
+    const driver = new Driver(game);
+    const { decision } = await play(driver);
+    expect(decision.kind).toBe("gameOver");
+    expect(game.scene.currentBattle.waveIndex).toBeGreaterThan(74);
+    driver.dispose();
+  });
+
+  // Found by a level-100 batch: on wave 69, the player's left Pokémon fainted mid-turn and the right one,
+  // Wynaut, moved left before using Destiny Bond, still aimed at its old battler index. Destiny Bond's
+  // final-boss condition read the missing target (MovePhase, "reading 'isEnemy'"; see bridge/run.ts).
+  it("plays on after Destiny Bond from a Pokémon moved to the left mid-turn", { timeout: 120_000 }, async () => {
+    const seed = "night100-117133";
+    const game = new GameManager(phaserGame);
+    game.override.startingLevel(100);
+    await startClassicRun(game, seed, ...randomTeam(seed));
+    const driver = new Driver(game);
+    const { decision } = await play(driver);
+    expect(decision.kind).toBe("gameOver");
+    expect(game.scene.currentBattle.waveIndex).toBeGreaterThan(69);
     driver.dispose();
   });
 

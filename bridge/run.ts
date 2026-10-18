@@ -24,6 +24,21 @@
 //     with each run until, after ~100 runs, a run took minutes. restoreRealGame() empties all three (the
 //     listener only stops a sprite whose animation is removed from the manager, which never happens).
 //
+// One upstream error is dropped instead of undone: resetSummonData() starts a Transform-reverting
+// loadAssets() that nothing awaits, and leaveField(..., destroy) destroys the Pokémon right after (a
+// transformed enemy recalled by The Expert Pokémon Breeder's onGameOver). When the load finishes,
+// playAnim() finds no sprite and the promise rejects. A browser only logs that, but the driver ends the
+// run on any unhandled rejection (issue #51, `tp100-324`). restoreRealGame() makes a load that finishes
+// after its Pokémon was destroyed drop its error.
+//
+// One upstream crash is turned into the failure the game shows for every similar move. In a double
+// battle, when the player's left Pokémon faints mid-turn and the right one is the last that can fight,
+// ToggleDoublePositionPhase moves it to the left (battler index 1 to 0). Its MovePhase for the turn was
+// queued before, so a move aimed at itself still targets index 1, now its fainted ally. Such a move
+// normally fails ("But it failed!", no active target), but Destiny Bond's failAgainstFinalBossCondition
+// reads the missing target first and throws (`night100-98394`, `night100-117133`). restoreRealGame()
+// makes that condition pass when there is no target, so the move fails like the others.
+//
 // The game's own RNG is seeded from the run's seed. Some game code uses Math.random instead (trainer
 // gender and evil-team doubles in getRandomTrainerFunc(), used on Classic waves 35, 62, 64 and 66), so
 // startClassicRun() also replaces Math.random, for the rest of the test, with a generator seeded from
@@ -36,6 +51,9 @@ import { activeOverrides } from "#app/overrides";
 import { GameModes } from "#enums/game-modes";
 import type { SpeciesId } from "#enums/species-id";
 import { UiMode } from "#enums/ui-mode";
+import { Pokemon } from "#field/pokemon";
+import type { MoveConditionFunc } from "#moves/move";
+import { failAgainstFinalBossCondition } from "#moves/move-condition";
 import { SelectStarterPhase } from "#phases/select-starter-phase";
 import type { GameManager } from "#test/framework/game-manager";
 import { MockContainer } from "#test/mocks/mocks-container/mock-container";
@@ -45,6 +63,10 @@ import { vi } from "vitest";
 
 /** Marks MockContainer.prototype as patched by dropDestroyedChildren(), which happens once per process. */
 const MOCK_ADD = Symbol("dropsDestroyedChildren");
+/** Marks Pokemon.prototype as patched by dropLateLoadErrors(), once per process too. */
+const LATE_LOAD = Symbol("dropsLateLoadErrors");
+/** Marks failAgainstFinalBossCondition as patched by passWithoutTarget(), once per process too. */
+const NO_TARGET = Symbol("passesWithoutTarget");
 
 /** Undo the game changes made by GameManager's constructor. Call after each `new GameManager()`. */
 export function restoreRealGame(): void {
@@ -68,6 +90,12 @@ export function restoreRealGame(): void {
   if (!(MOCK_ADD in MockContainer.prototype)) {
     dropDestroyedChildren();
   }
+  if (!(LATE_LOAD in Pokemon.prototype)) {
+    dropLateLoadErrors();
+  }
+  if (!(NO_TARGET in failAgainstFinalBossCondition)) {
+    passWithoutTarget();
+  }
 }
 
 /** Make MockContainer remove a (real Phaser) child when the child is destroyed, like Container.addHandler. */
@@ -90,6 +118,28 @@ function dropDestroyedChildren(): void {
     return addAt.call(this, obj, index);
   };
   proto[MOCK_ADD] = true;
+}
+
+/** Make Pokemon.loadAssets drop its error if the Pokémon was destroyed (scene unset) before the load finished. */
+function dropLateLoadErrors(): void {
+  const proto = Pokemon.prototype as Pokemon & { [LATE_LOAD]?: true };
+  const { loadAssets } = proto;
+  proto.loadAssets = function (this: Pokemon, ...args) {
+    return loadAssets.apply(this, args).catch((error: unknown) => {
+      if (this.scene != null) {
+        throw error;
+      }
+    });
+  };
+  proto[LATE_LOAD] = true;
+}
+
+/** Make Destiny Bond's final-boss condition pass when the move has no target, instead of throwing. */
+function passWithoutTarget(): void {
+  const condition = failAgainstFinalBossCondition as { func: MoveConditionFunc; [NO_TARGET]?: true };
+  const { func } = condition;
+  condition.func = (user, target, move) => target == null || func(user, target, move);
+  condition[NO_TARGET] = true;
 }
 
 /** Replace Math.random with a generator seeded from `seed` until the test ends (vitest's restoreMocks). */
