@@ -11,7 +11,12 @@ a summary is printed and saved as `summary.json`, in the output directory.
 Throughput (issue #11) is summarized too: per worker while it plays (boot included), the
 time between runs in a process, each process's startup, and the batch as a whole.
 
-Usage: scripts/run_games.sh <runs> [processes] [--prefix P] [--start N] [--level L] [--out DIR]
+`--policy random` plays uniformly random legal actions (issue #53) instead of the default
+policy, to reach states the default policy never does. A truncated run's record keeps the
+actions taken, so scripts/replay_runs.sh can replay it.
+
+Usage: scripts/run_games.sh <runs> [processes] [--prefix P] [--start N] [--level L]
+       [--policy default|random] [--out DIR]
 """
 
 import argparse
@@ -38,13 +43,16 @@ def count_lines(path: Path) -> int:
     return len(path.read_text().splitlines()) if path.exists() else 0
 
 
-def launch(prefix: str, start: int, count: int, level: int, out: Path, log: Path):
+def launch(
+    prefix: str, start: int, count: int, level: int, policy: str, out: Path, log: Path
+):
     """Start a batch runner process for seeds `prefix-start ..` (starters at `level`, 0: real)."""
     env = os.environ | {
         "BATCH_PREFIX": prefix,
         "BATCH_START": str(start),
         "BATCH_COUNT": str(count),
         "BATCH_LEVEL": str(level),
+        "BATCH_POLICY": policy,
         "BATCH_OUT": str(out),
         "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0",
     }
@@ -58,7 +66,14 @@ def launch(prefix: str, start: int, count: int, level: int, out: Path, log: Path
 
 
 def play_chunk(
-    out: Path, prefix: str, start: int, count: int, level: int, k: int, stall_s: float
+    out: Path,
+    prefix: str,
+    start: int,
+    count: int,
+    level: int,
+    policy: str,
+    k: int,
+    stall_s: float,
 ) -> tuple[list[int], list[float]]:
     """Play one chunk to the end, restarting past stuck runs.
 
@@ -70,7 +85,7 @@ def play_chunk(
     while (done := count_lines(path)) < count:
         log = out / f"chunk-{k}-{len(codes)}.log"
         launched = time.time()
-        proc = launch(prefix, start + done, count - done, level, path, log)
+        proc = launch(prefix, start + done, count - done, level, policy, path, log)
         seen, last, killed = done, time.monotonic(), False
         while proc.poll() is None:
             time.sleep(1)
@@ -148,6 +163,9 @@ def summarize(records: list[dict]) -> dict:
     encounters = Counter(
         m.split("@")[0] for r in played for m in r["mysteryEncounters"]
     )
+    kinds = Counter()
+    for r in played:
+        kinds.update(r.get("actionKinds", {}))
     return {
         "runs": len(records),
         "outcomes": dict(Counter(r["outcome"] for r in records)),
@@ -170,6 +188,10 @@ def summarize(records: list[dict]) -> dict:
         "bootMs": spread([r["bootMs"] for r in played]),
         "mysteryEncounters": sum(encounters.values()),
         "mysteryEncounterTypes": dict(encounters.most_common()),
+        "actionKinds": dict(kinds.most_common()),
+        "runsWithActionKind": dict(
+            Counter(k for r in played for k in r.get("actionKinds", {})).most_common()
+        ),
         "perWorker": throughput(played),
     }
 
@@ -184,6 +206,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--level", type=int, default=0, help="starters' level (0: the real game's)"
     )
+    parser.add_argument("--policy", choices=["default", "random"], default="default")
     parser.add_argument("--stall-seconds", type=float, default=420)
     parser.add_argument("--out", type=Path, help="default runs/games-<timestamp>")
     args = parser.parse_args(argv)
@@ -203,6 +226,7 @@ def main(argv: list[str] | None = None) -> None:
                 args.start + o,
                 n,
                 args.level,
+                args.policy,
                 k,
                 args.stall_seconds,
             )
@@ -226,6 +250,7 @@ def main(argv: list[str] | None = None) -> None:
     played = [r for r in records if r["outcome"] != "lost"]
     summary |= {
         "level": args.level,
+        "policy": args.policy,
         "processes": args.processes,
         "chunks": len(work),
         "exitCodes": dict(Counter(codes)),

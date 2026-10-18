@@ -60,6 +60,11 @@ truncated it) to `runs/games-<timestamp>/runs.jsonl`, and a summary goes to `sum
 
 Add `--level 100` to start the starters at level 100: runs then last ~90 waves instead of ~9.
 
+Add `--policy random` to play uniformly random legal actions instead, seeded from the run's seed. It
+switches, throws balls, runs, buys and rerolls, which the default policy never does, so it reaches game
+states (and game bugs) the default policy can't. A truncated run's record also has every action taken, and
+`scripts/replay_runs.sh runs/games-<timestamp>/runs.jsonl` replays those runs from their seeds and actions.
+
 ## Throughput
 
 One bridge process plays the real game at about 170 env steps (decisions) per second, boot included:
@@ -79,7 +84,7 @@ process slows down as it plays more waves (half speed after ~5,000), so restart 
 | `src/pokerogue_rl/env.py` | Gymnasium env (client for one bridge) |
 | `src/pokerogue_rl/train.py` | Training entry point (`pokerogue-train`) |
 | `src/pokerogue_rl/games.py` | Launches batch runs in parallel and summarizes them |
-| `scripts/` | `setup.sh`, `start_server.sh`, `train.sh`, `test_bridge.sh`, `run_games.sh` |
+| `scripts/` | `setup.sh`, `start_server.sh`, `train.sh`, `test_bridge.sh`, `run_games.sh`, `replay_runs.sh` |
 | `notes/` | Findings and investigation write-ups |
 | `runs/` | Training and batch outputs (gitignored) |
 

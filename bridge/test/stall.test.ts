@@ -17,7 +17,7 @@ import { GameManager } from "#test/framework/game-manager";
 import Phaser from "phaser";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { type Decision, Driver, type StallLimits } from "../driver";
-import { defaultPolicy, type Policy } from "../policy";
+import { defaultPolicy, type Policy, randomPolicy } from "../policy";
 import { startClassicRun } from "../run";
 import { randomTeam } from "../team";
 
@@ -297,6 +297,75 @@ describe("stall detection", () => {
     const { decision } = await play(driver, random);
     expect(decision.kind).toBe("gameOver");
     expect(game.scene.currentBattle.waveIndex).toBeGreaterThan(31);
+    driver.dispose();
+  });
+
+  // The runs below were found by random-policy batches (issue #53; notes/2026-10-18-random-policy-hunt.md).
+
+  // Fleeing a double wild battle on wave 31 ended an enemy's Neutralizing Gas, so the other enemy's Insomnia
+  // cured its sleep, and the ResetStatusPhase that queued ran after the flee had destroyed it
+  // (EnemyPokemon.playSprite, "reading 'play'"; see bridge/run.ts).
+  it("plays on after fleeing a double battle that ends Neutralizing Gas", { timeout: 120_000 }, async () => {
+    const seed = "rhunt100-35850";
+    const game = new GameManager(phaserGame);
+    game.override.startingLevel(100);
+    await startClassicRun(game, seed, ...randomTeam(seed));
+    const driver = new Driver(game);
+    const { decision } = await play(driver, randomPolicy(seed));
+    expect(decision.kind).toBe("gameOver");
+    expect(game.scene.currentBattle.waveIndex).toBeGreaterThan(31);
+    driver.dispose();
+  });
+
+  // A Future Sight that lands after its user switched out can hurt the user back, off the field: on wave 45,
+  // an enemy Cramorant's Gulp Missile; on wave 13 of the second run, a fainting Pyukumuku's Innards Out. The
+  // damage animation found no Pokémon at battler index -1 (DamageNumberHandler.add, "reading
+  // 'getBattlerIndex'"; see bridge/run.ts).
+  it.each([
+    ["rhunt100-68195", 45],
+    ["rhunt100-138254", 13],
+  ])("plays on after damage to an off-field Future Sight user (%s)", { timeout: 120_000 }, async (seed, wave) => {
+    const game = new GameManager(phaserGame);
+    game.override.startingLevel(100);
+    await startClassicRun(game, seed, ...randomTeam(seed));
+    const driver = new Driver(game);
+    const { decision } = await play(driver, randomPolicy(seed));
+    expect(decision.kind).toBe("gameOver");
+    expect(game.scene.currentBattle.waveIndex).toBeGreaterThan(wave);
+    driver.dispose();
+  });
+
+  // A Nincada evolved during The Expert Pokémon Breeder's battle on wave 42, when the party was only the
+  // chosen Pokémon, so the game added a Shedinja, and the party came back with seven. On wave 55 the seventh
+  // was the last that could fight and couldn't be sent out, so the turns went on with no Pokémon to command
+  // (a waveTurnCap truncation). The Shedinja check now counts the Pokémon held aside (bridge/run.ts).
+  it("keeps the party at six when Nincada evolves in The Expert Pokémon Breeder", { timeout: 120_000 }, async () => {
+    const seed = "rhunt100-117628";
+    const game = new GameManager(phaserGame);
+    game.override.startingLevel(100);
+    await startClassicRun(game, seed, ...randomTeam(seed));
+    const driver = new Driver(game);
+    const { decision } = await play(driver, randomPolicy(seed));
+    expect(decision.kind).toBe("gameOver");
+    expect(game.scene.currentBattle.waveIndex).toBeGreaterThan(42);
+    expect(game.scene.getPlayerParty().length).toBeLessThanOrEqual(6);
+    driver.dispose();
+  });
+
+  // In a trainer double battle on wave 62, both player Pokémon fainted with an enemy, leaving one Pokémon to
+  // send out. The enemy's switch-in ran first (SwitchSummonPhase is ordered by speed), so the second faint's
+  // party screen came before the first switch-in, and both sent out the same Pokémon. The second swap brought
+  // a fainted Pokémon back (a waveTurnCap truncation). A Pokémon already chosen to switch in is no longer
+  // offered (bridge/decisions.ts).
+  it("doesn't send out the same Pokémon for both faints of a double battle", { timeout: 120_000 }, async () => {
+    const seed = "rhunt100-113244";
+    const game = new GameManager(phaserGame);
+    game.override.startingLevel(100);
+    await startClassicRun(game, seed, ...randomTeam(seed));
+    const driver = new Driver(game);
+    const { decision } = await play(driver, randomPolicy(seed));
+    expect(decision.kind).toBe("gameOver");
+    expect(game.scene.currentBattle.waveIndex).toBeGreaterThanOrEqual(62);
     driver.dispose();
   });
 });

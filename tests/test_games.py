@@ -29,7 +29,7 @@ for n in range(start, start + count):
 """
 
 
-def fake_launch(prefix, start, count, level, out, log):
+def fake_launch(prefix, start, count, level, policy, out, log):
     cmd = [sys.executable, "-c", FAKE_RUNNER, prefix, str(start), str(count), str(out)]
     return subprocess.Popen(cmd)
 
