@@ -10,6 +10,9 @@
 // New moves replace the weakest known move. First biome, evolutions go ahead, caught Pokémon are not
 // kept over the party. Mystery encounters (issue #8): a preferred option per encounter type
 // (ENCOUNTER_PREFERENCES), else the first legal one; the first legal Pokémon and follow-up entry.
+//
+// randomPolicy (issue #53) picks uniformly among the legal actions, to hunt game bugs; replayPolicy plays
+// back recorded actions.
 
 import { BattlerIndex } from "#enums/battler-index";
 import { MoveCategory } from "#enums/move-category";
@@ -121,6 +124,39 @@ export const defaultPolicy: Policy = (obs, legal) => {
       return legal[0];
   }
 };
+
+/**
+ * A policy that picks uniformly among the legal actions, to find game bugs in states the default policy
+ * never reaches (issue #53): switches, balls, running, the shop, rerolls, releases. Its RNG is its own,
+ * seeded from "policy:" + `seed` (FNV-1a, then mulberry32), so it draws nothing from the game's RNG or
+ * Math.random, and a run replays from its seed.
+ */
+export function randomPolicy(seed: string): Policy {
+  let state = 0x811c9dc5;
+  for (const c of `policy:${seed}`) {
+    state = Math.imul(state ^ c.codePointAt(0)!, 0x01000193);
+  }
+  return (_obs, legal) => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return legal[Math.floor((((t ^ (t >>> 14)) >>> 0) / 2 ** 32) * legal.length)];
+  };
+}
+
+/**
+ * Plays back `actions` in order, e.g. the actions recorded for a truncated run, to replay a run whatever
+ * policy played it. Throws when they run out; the driver throws if one is not legal (the replay diverged).
+ */
+export function replayPolicy(actions: readonly Action[]): Policy {
+  let i = 0;
+  return () => {
+    if (i >= actions.length) {
+      throw new Error(`Replay ran out of actions after ${i}`);
+    }
+    return actions[i++];
+  };
+}
 
 /**
  * Option indices to try in order, per encounter type. Mostly the safe choice: leave or decline where the
