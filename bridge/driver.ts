@@ -45,6 +45,7 @@ import type { MoveId } from "#enums/move-id";
 import { MoveUseMode } from "#enums/move-use-mode";
 import type { MysteryEncounterType } from "#enums/mystery-encounter-type";
 import { PartyUiMode } from "#enums/party-ui-mode";
+import { PokemonAnimType } from "#enums/pokemon-anim-type";
 import { UiMode } from "#enums/ui-mode";
 import type { Pokemon } from "#field/pokemon";
 import { type ModifierType, type ModifierTypeOption, PokemonModifierType } from "#modifiers/modifier-type";
@@ -319,6 +320,16 @@ export class Driver {
         if (phase.is("ScanIvsPhase")) {
           // The IV Scanner only shows enemy IVs. Its start() throws in the harness (mock sprites have no
           // name), so skip it.
+          phase.end();
+          continue;
+        }
+        if (
+          phase.is("PokemonAnimPhase")
+          && [PokemonAnimType.COMMANDER_APPLY, PokemonAnimType.COMMANDER_REMOVE].includes(phase["key"])
+        ) {
+          // Tatsugiri jumping in and out of Dondozo: only visuals (CommanderAbAttr applies the effect). It
+          // copies the sprite's frame, which mock sprites don't have, so it throws in the harness
+          // (`hunt100-2727`). Upstream's Commander tests stub it out too.
           phase.end();
           continue;
         }
@@ -615,8 +626,19 @@ export class Driver {
         respond(slot, PartyOption.SEND_OUT);
         return;
       }
+      const legal = switchActions();
+      if (phase["isModal"] && (legal.length === 0 || fieldIndex >= this.game.scene.currentBattle.getBattlerCount())) {
+        // A forced switch left over from the last battle (issue #51): the Pokémon on the field fainted with the
+        // last enemy, and FaintPhase's SwitchPhase runs after NewBattlePhase, in a battle with a different
+        // number of battlers. Going from a single to a double, party slot 1 counts as a field slot, so there may
+        // be nothing to send out and no cancel (a softlock). Going from a double to a single, field slot 1
+        // doesn't exist, and SwitchSummonPhase crashes. Answer with a field slot, which ends the phase without
+        // a switch. The wave's SummonPhase then sends out the first Pokémon able to fight (preSummon).
+        respond(0, PartyOption.SEND_OUT);
+        return;
+      }
       // SEND_OUT keeps the phase's own switch type, which is BATON_PASS after Baton Pass.
-      const decision: Decision = { kind: "switch", fieldIndex, legal: switchActions() };
+      const decision: Decision = { kind: "switch", fieldIndex, legal };
       this.raise(decision, { kind: "switch", fieldIndex }, (action: ActionOf<"switch">) =>
         respond(action.partySlot, PartyOption.SEND_OUT),
       );
