@@ -216,13 +216,21 @@ export function sameAction(a: Action, b: Action): boolean {
 
 // #region battle
 
-/** Party slots that can be sent into battle: benched, not fainted, and allowed by the run's challenges. */
+/**
+ * Party slots that can be sent into battle: benched, not fainted, and allowed by the run's challenges. Not a
+ * slot a queued SwitchSummonPhase sends in: those run in speed order, so when two Pokémon faint at once, the
+ * second faint's party screen can come before the first switch-in, with its Pokémon still on the bench.
+ */
 function benchSlots(): number[] {
   const party = globalScene.getPlayerParty();
   const battlerCount = globalScene.currentBattle.getBattlerCount();
+  const switchingIn = (i: number) =>
+    globalScene.phaseManager.hasPhaseOfType("SwitchSummonPhase", p => p["player"] && p["slotIndex"] === i);
   return party
     .map((_, i) => i)
-    .filter(i => i >= battlerCount && party[i].isAllowedInBattle() && !party[i].isOnField());
+    .filter(
+      i => i >= battlerCount && party[i].isAllowedInBattle() && !party[i].isOnField() && !switchingIn(i),
+    );
 }
 
 /** Legal actions for {@linkcode Decision} `command`, mirroring `CommandPhase.handleCommand`. */

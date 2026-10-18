@@ -39,6 +39,25 @@
 // reads the missing target first and throws (`night100-98394`, `night100-117133`). restoreRealGame()
 // makes that condition pass when there is no target, so the move fails like the others.
 //
+// Two more upstream crashes are skipped, found by random-policy batches (issue #53):
+//   - A ResetStatusPhase for a Pokémon already destroyed. Fleeing a double wild battle ends an enemy's
+//     Neutralizing Gas (PreLeaveFieldAbAttr), so the other enemy's Insomnia cures its sleep, queueing a
+//     ResetStatusPhase that runs after the flee destroyed it (EnemyPokemon.playSprite, "reading 'play'";
+//     `rhunt100-35850`). The harness's tweens end at once, so the destroy may come sooner than in a
+//     browser. restoreRealGame() makes the phase end without clearing the status of a destroyed Pokémon.
+//   - A DamageAnimPhase with no Pokémon at its battler index. A Future Sight that lands after its user
+//     switched out can hurt the user back off the field (Gulp Missile, Innards Out), and damageAndUpdate()
+//     queues the animation at battler index -1 (DamageNumberHandler.add, "reading 'getBattlerIndex'";
+//     `rhunt100-68195`, `rhunt100-138254`). The damage is already dealt, so restoreRealGame() makes the
+//     phase end without its animation.
+//
+// And one upstream rule is kept that the game breaks: a party of at most six. The Expert Pokémon Breeder
+// leaves only the chosen Pokémon in the party for its battle. If that's a Nincada and it evolves there,
+// the Shedinja check sees a party of one and adds a Shedinja, and the party comes back with seven. The
+// seventh can't be sent out (SwitchPhase only takes slots 0-5; on the party screen, cursor 6 is Cancel),
+// so once it's the last that can fight, the battle goes on with no Pokémon to command (`rhunt100-117628`).
+// restoreRealGame() makes the Shedinja check count the Pokémon the encounter holds aside.
+//
 // The game's own RNG is seeded from the run's seed. Some game code uses Math.random instead (trainer
 // gender and evil-team doubles in getRandomTrainerFunc(), used on Classic waves 35, 62, 64 and 66), so
 // startClassicRun() also replaces Math.random, for the rest of the test, with a generator seeded from
@@ -51,9 +70,12 @@ import { activeOverrides } from "#app/overrides";
 import { GameModes } from "#enums/game-modes";
 import type { SpeciesId } from "#enums/species-id";
 import { UiMode } from "#enums/ui-mode";
-import { Pokemon } from "#field/pokemon";
+import { PlayerPokemon, Pokemon } from "#field/pokemon";
 import type { MoveConditionFunc } from "#moves/move";
 import { failAgainstFinalBossCondition } from "#moves/move-condition";
+import { DamageAnimPhase } from "#phases/damage-anim-phase";
+import { PokemonPhase } from "#phases/pokemon-phase";
+import { ResetStatusPhase } from "#phases/reset-status-phase";
 import { SelectStarterPhase } from "#phases/select-starter-phase";
 import type { GameManager } from "#test/framework/game-manager";
 import { MockContainer } from "#test/mocks/mocks-container/mock-container";
@@ -67,6 +89,12 @@ const MOCK_ADD = Symbol("dropsDestroyedChildren");
 const LATE_LOAD = Symbol("dropsLateLoadErrors");
 /** Marks failAgainstFinalBossCondition as patched by passWithoutTarget(), once per process too. */
 const NO_TARGET = Symbol("passesWithoutTarget");
+/** Marks ResetStatusPhase.prototype as patched by skipDestroyedReset(), once per process too. */
+const DESTROYED_RESET = Symbol("skipsDestroyedReset");
+/** Marks DamageAnimPhase.prototype as patched by skipOffFieldDamageAnim(), once per process too. */
+const OFF_FIELD_ANIM = Symbol("skipsOffFieldDamageAnim");
+/** Marks PlayerPokemon.prototype as patched by countHeldAsideParty(), once per process too. */
+const HELD_ASIDE = Symbol("countsHeldAsideParty");
 
 /** Undo the game changes made by GameManager's constructor. Call after each `new GameManager()`. */
 export function restoreRealGame(): void {
@@ -95,6 +123,15 @@ export function restoreRealGame(): void {
   }
   if (!(NO_TARGET in failAgainstFinalBossCondition)) {
     passWithoutTarget();
+  }
+  if (!(DESTROYED_RESET in ResetStatusPhase.prototype)) {
+    skipDestroyedReset();
+  }
+  if (!(OFF_FIELD_ANIM in DamageAnimPhase.prototype)) {
+    skipOffFieldDamageAnim();
+  }
+  if (!(HELD_ASIDE in PlayerPokemon.prototype)) {
+    countHeldAsideParty();
   }
 }
 
@@ -140,6 +177,57 @@ function passWithoutTarget(): void {
   const { func } = condition;
   condition.func = (user, target, move) => target == null || func(user, target, move);
   condition[NO_TARGET] = true;
+}
+
+/** Make ResetStatusPhase end without clearing the status of a Pokémon destroyed (scene unset) since it was queued. */
+function skipDestroyedReset(): void {
+  const proto = ResetStatusPhase.prototype as ResetStatusPhase & { [DESTROYED_RESET]?: true };
+  const { start } = proto;
+  proto.start = function (this: ResetStatusPhase) {
+    if (this["pokemon"].scene == null) {
+      this.end();
+      return;
+    }
+    start.call(this);
+  };
+  proto[DESTROYED_RESET] = true;
+}
+
+/**
+ * Make DamageAnimPhase end without its animation when no Pokémon is at its battler index. It ends as a
+ * PokemonPhase: its own end() would start the final boss's second phase for the missing Pokémon.
+ */
+function skipOffFieldDamageAnim(): void {
+  const proto = DamageAnimPhase.prototype as DamageAnimPhase & { [OFF_FIELD_ANIM]?: true };
+  const { start } = proto;
+  proto.start = function (this: DamageAnimPhase) {
+    if (this.getPokemon() == null) {
+      PokemonPhase.prototype.end.call(this);
+      return;
+    }
+    start.call(this);
+  };
+  proto[OFF_FIELD_ANIM] = true;
+}
+
+/**
+ * Make a Nincada's evolution add no Shedinja when the party and the Pokémon The Expert Pokémon Breeder holds
+ * aside (encounter.misc.originalParty) already make six.
+ */
+function countHeldAsideParty(): void {
+  const proto = PlayerPokemon.prototype as unknown as {
+    handleSpecialEvolutions: (...args: unknown[]) => void;
+    [HELD_ASIDE]?: true;
+  };
+  const { handleSpecialEvolutions } = proto;
+  proto.handleSpecialEvolutions = function (this: PlayerPokemon, ...args) {
+    const heldAside: Pokemon[] = globalScene.currentBattle?.mysteryEncounter?.misc?.originalParty ?? [];
+    if (new Set([...globalScene.getPlayerParty(), ...heldAside]).size >= 6) {
+      return;
+    }
+    handleSpecialEvolutions.apply(this, args);
+  };
+  proto[HELD_ASIDE] = true;
 }
 
 /** Replace Math.random with a generator seeded from `seed` until the test ends (vitest's restoreMocks). */
