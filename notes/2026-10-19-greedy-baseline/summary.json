@@ -1,0 +1,138 @@
+{
+  "runs": 10000,
+  "outcomes": {
+    "terminated": 10000
+  },
+  "truncationReasons": {},
+  "truncated": [],
+  "errors": [],
+  "wave": {
+    "min": 1,
+    "median": 22.0,
+    "mean": 25.1,
+    "max": 115
+  },
+  "turns": {
+    "min": 6,
+    "median": 59.0,
+    "mean": 64.4,
+    "max": 279
+  },
+  "maxWaveTurns": 111,
+  "maxPhasesPerNext": 81,
+  "decisions": {
+    "min": 12,
+    "median": 128.0,
+    "mean": 144.4,
+    "max": 700
+  },
+  "wallMs": {
+    "min": 61,
+    "median": 705.0,
+    "mean": 806.5,
+    "max": 4897
+  },
+  "bootMs": {
+    "min": 102,
+    "median": 106.0,
+    "mean": 118.3,
+    "max": 931
+  },
+  "mysteryEncounters": 8612,
+  "mysteryEncounterTypes": {
+    "TRAINING_SESSION": 997,
+    "MYSTERIOUS_CHALLENGERS": 938,
+    "MYSTERIOUS_CHEST": 597,
+    "BERRIES_ABOUND": 593,
+    "DELIBIRDY": 586,
+    "UNCOMMON_BREED": 577,
+    "FIGHT_OR_FLIGHT": 573,
+    "FUN_AND_GAMES": 548,
+    "DEPARTMENT_STORE_SALE": 478,
+    "GLOBAL_TRADE_SYSTEM": 471,
+    "SHADY_VITAMIN_DEALER": 464,
+    "PART_TIMER": 415,
+    "SLUMBERING_SNORLAX": 398,
+    "THE_POKEMON_SALESMAN": 332,
+    "TELEPORTING_HIJINKS": 210,
+    "SAFARI_ZONE": 110,
+    "DANCING_LESSONS": 90,
+    "DARK_DEAL": 72,
+    "THE_EXPERT_POKEMON_BREEDER": 55,
+    "BUG_TYPE_SUPERFAN": 49,
+    "WEIRD_DREAM": 33,
+    "LOST_AT_SEA": 12,
+    "ABSOLUTE_AVARICE": 7,
+    "THE_STRONG_STUFF": 4,
+    "FIERY_FALLOUT": 1,
+    "A_TRAINERS_TEST": 1,
+    "CLOWNING_AROUND": 1
+  },
+  "actionKinds": {
+    "move": 722581,
+    "reward": 216162,
+    "itemTarget": 163274,
+    "target": 143580,
+    "switch": 52044,
+    "buy": 46060,
+    "learnMove": 42951,
+    "skipMove": 34477,
+    "meOption": 8612,
+    "skipReward": 6021,
+    "evolve": 4120,
+    "biome": 2966,
+    "mePokemon": 741,
+    "meSubOption": 7,
+    "keepParty": 1
+  },
+  "runsWithActionKind": {
+    "move": 10000,
+    "reward": 9994,
+    "itemTarget": 9972,
+    "switch": 9819,
+    "buy": 8910,
+    "target": 8678,
+    "learnMove": 7242,
+    "skipMove": 6973,
+    "meOption": 4915,
+    "skipReward": 3934,
+    "evolve": 2569,
+    "biome": 1845,
+    "mePokemon": 705,
+    "meSubOption": 7,
+    "keepParty": 1
+  },
+  "perWorker": {
+    "gamesPerHour": 3893,
+    "turnsPerSecond": 69.6,
+    "decisionsPerSecond": 156.1,
+    "playTurnsPerSecond": 79.8,
+    "playDecisionsPerSecond": 179.0
+  },
+  "level": 0,
+  "policy": "greedy",
+  "processes": 24,
+  "chunks": 200,
+  "exitCodes": {
+    "0": 200
+  },
+  "elapsedS": 484.1,
+  "runsPerMinute": 1239.4,
+  "betweenRunsMs": {
+    "min": 0,
+    "median": 1.0,
+    "mean": 0.7,
+    "max": 7
+  },
+  "processStartupS": {
+    "min": 5.97,
+    "median": 7.33,
+    "mean": 7.7,
+    "max": 10.91
+  },
+  "aggregate": {
+    "gamesPerHour": 74364,
+    "turnsPerSecond": 1329.9,
+    "decisionsPerSecond": 2982.0
+  }
+}
