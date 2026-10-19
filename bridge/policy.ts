@@ -11,15 +11,23 @@
 // kept over the party. Mystery encounters (issue #8): a preferred option per encounter type
 // (ENCOUNTER_PREFERENCES), else the first legal one; the first legal Pokémon and follow-up entry.
 //
+// greedyPolicy is the baseline from issue #14. Battles: the move with the most expected damage by the
+// visible-data estimate (bridge/damage.ts), capped at the HP left; a switch to a healthy bench Pokémon
+// whose best move does at least twice as much. Rewards: shop healing while a Pokémon is below half HP,
+// then a revive if one has fainted, healing if one is hurt, levels and EXP, anything else, and balls and
+// lures last; never move-teaching items. Healing goes to the Pokémon with the least HP, revives to the
+// highest level. New moves are learned only over a weaker one. Everything else as defaultPolicy.
+//
 // randomPolicy (issue #53) picks uniformly among the legal actions, to hunt game bugs; replayPolicy plays
 // back recorded actions.
 
 import { BattlerIndex } from "#enums/battler-index";
 import { MoveCategory } from "#enums/move-category";
+import { MoveTarget } from "#enums/move-target";
 import { MysteryEncounterType } from "#enums/mystery-encounter-type";
-import { data, effectiveness } from "./damage";
+import { data, effectiveness, estimateDamage } from "./damage";
 import type { Action, ActionOf } from "./decisions";
-import type { Observation, OwnPokemonObs } from "./observation";
+import type { EnemyPokemonObs, Observation, OwnPokemonObs } from "./observation";
 
 /**
  * Chooses an action for a decision from its observation (`Driver.observe()`) and legal actions
@@ -108,6 +116,159 @@ export const defaultPolicy: Policy = (obs, legal) => {
     case "mePokemon":
     case "meSubOption":
       return legal[0];
+  }
+};
+
+/** Move targets that hit every enemy (and some the ally too, which the greedy policy does not count). */
+const SPREAD_TARGETS: ReadonlySet<number> = new Set([
+  MoveTarget.ALL_OTHERS,
+  MoveTarget.ALL_NEAR_OTHERS,
+  MoveTarget.ALL_NEAR_ENEMIES,
+  MoveTarget.ALL_ENEMIES,
+]);
+
+/**
+ * Expected damage of `moveId` by `user` on `enemy` that counts, as a fraction of its HP bar: the estimate
+ * times accuracy, capped at the HP left, or at a boss's current shield, which stops a hit.
+ */
+function hitValue(obs: Observation, user: OwnPokemonObs, moveId: number, enemy: EnemyPokemonObs): number {
+  const move = data().moves[moveId];
+  const accuracy = move.accuracy < 0 ? 1 : move.accuracy / 100;
+  const shield = enemy.bossSegments > 0 ? enemy.bossSegmentIndex / enemy.bossSegments : 0;
+  return Math.min(estimateDamage(obs, user, moveId, enemy), enemy.hp - shield) * accuracy;
+}
+
+/** Damage value of `moveId` by `user`: on its best target, or summed over the enemies for a spread move. */
+function moveValue(obs: Observation, user: OwnPokemonObs, moveId: number): number {
+  const enemies = obs.battle.enemies.filter(e => e.hp > 0);
+  const values = enemies.map(e => hitValue(obs, user, moveId, e));
+  if (SPREAD_TARGETS.has(data().moves[moveId].target)) {
+    // Moves hitting more than one target deal 75%.
+    return values.reduce((a, b) => a + b, 0) * (enemies.length > 1 ? 0.75 : 1);
+  }
+  return Math.max(0, ...values);
+}
+
+/** Damage value of a Pokémon's best move with PP left. */
+function bestMoveValue(obs: Observation, pokemon: OwnPokemonObs): number {
+  return Math.max(0, ...pokemon.moves.filter(m => m.pp > 0).map(m => moveValue(obs, pokemon, m.moveId)));
+}
+
+/** Healing items, and items that revive a fainted Pokémon. */
+const HEALS: ReadonlySet<string> = new Set(["POTION", "SUPER_POTION", "HYPER_POTION", "MAX_POTION", "FULL_RESTORE"]);
+const REVIVES: ReadonlySet<string> = new Set(["REVIVE", "MAX_REVIVE", "SACRED_ASH"]);
+/** Items that give levels or EXP. */
+const EXP_ITEMS: ReadonlySet<string> = new Set([
+  "RARE_CANDY",
+  "RARER_CANDY",
+  "EXP_SHARE",
+  "EXP_CHARM",
+  "SUPER_EXP_CHARM",
+  "GOLDEN_EXP_CHARM",
+  "EXP_BALANCE",
+]);
+/** Items the greedy policy has no use for: it never throws balls, and lures bring double battles. */
+const USELESS: ReadonlySet<string> = new Set([
+  "POKEBALL",
+  "GREAT_BALL",
+  "ULTRA_BALL",
+  "ROGUE_BALL",
+  "MASTER_BALL",
+  "LURE",
+  "SUPER_LURE",
+  "MAX_LURE",
+]);
+
+/**
+ * Items that teach a move. The greedy policy skips moves weaker than its weakest, and a skipped move
+ * gives the item back with the reward screen unchanged, so it would pick the same item forever.
+ */
+const MOVE_ITEMS: ReadonlySet<string> = new Set(["TM_COMMON", "TM_GREAT", "TM_ULTRA", "MEMORY_MUSHROOM"]);
+
+/** Whether a Pokémon is below half HP and not fainted. */
+const hurt = (p: OwnPokemonObs) => p.hp > 0 && p.hp < p.stats[0] / 2;
+
+/**
+ * How much the greedy policy wants a reward: a revive when a Pokémon has fainted, healing when one is
+ * below half HP, then levels and EXP, then anything else but balls and lures.
+ */
+function rewardValue(obs: Observation, id: string): number {
+  if (REVIVES.has(id)) {
+    return obs.party.some(p => p.hp === 0) ? 4 : 1;
+  }
+  if (HEALS.has(id)) {
+    return obs.party.some(hurt) ? 3 : 1;
+  }
+  return EXP_ITEMS.has(id) ? 2 : USELESS.has(id) ? 0 : 1;
+}
+
+/** The greedy baseline policy. */
+export const greedyPolicy: Policy = (obs, legal) => {
+  const stage = obs.stage;
+  switch (stage.kind) {
+    case "command": {
+      const pokemon = onField(obs, stage.fieldIndex);
+      const value = (a: ActionOf<"move">) => {
+        const moveId = pokemon.moves[a.slot]?.moveId;
+        return moveId === undefined ? 0 : moveValue(obs, pokemon, moveId);
+      };
+      const move = best(
+        legal.filter((a): a is ActionOf<"move"> => a.kind === "move" && !a.tera),
+        value,
+      );
+      // Switch to the healthy bench Pokémon whose best move does the most, if it does twice as much (so
+      // also when no move does damage).
+      const switches = legal.filter(
+        (a): a is ActionOf<"switch"> => a.kind === "switch" && !hurt(obs.party[a.partySlot]),
+      );
+      const switchValue = (a: ActionOf<"switch">) => bestMoveValue(obs, obs.party[a.partySlot]);
+      const swap = switches.length > 0 ? best(switches, switchValue) : undefined;
+      return swap && switchValue(swap) > 0 && switchValue(swap) >= 2 * value(move) ? swap : move;
+    }
+    case "target": {
+      const user = onField(obs, stage.fieldIndex);
+      // The enemy it damages most; allies only when there is no enemy to target.
+      return best(legal, a => {
+        if (a.kind !== "target" || a.target < BattlerIndex.ENEMY) {
+          return -1;
+        }
+        const enemy = obs.battle.enemies.find(e => e.fieldIndex === a.target - BattlerIndex.ENEMY);
+        return enemy ? hitValue(obs, user, stage.moveId, enemy) : 0;
+      });
+    }
+    case "switch":
+      // Send in the Pokémon whose best move does the most damage.
+      return best(legal, a => (a.kind === "switch" ? bestMoveValue(obs, obs.party[a.partySlot]) : -1));
+    case "reward": {
+      // Buy healing while a Pokémon is below half HP (the shop stays open), then take the best reward.
+      const heal = legal.find(a => a.kind === "buy" && HEALS.has(stage.shop[a.index].id));
+      if (heal && obs.party.some(hurt)) {
+        return heal;
+      }
+      const rewards = legal.filter(
+        (a): a is ActionOf<"reward"> => a.kind === "reward" && !MOVE_ITEMS.has(stage.options[a.index].id),
+      );
+      return rewards.length > 0 ? best(rewards, a => rewardValue(obs, stage.options[a.index].id)) : { kind: "skipReward" };
+    }
+    case "itemTarget": {
+      // Healing to the Pokémon with the least HP left, a revive to the highest level; others as defaultPolicy.
+      const id = stage.item.id;
+      if (!HEALS.has(id) && !REVIVES.has(id)) {
+        return defaultPolicy(obs, legal);
+      }
+      return best(legal, a => {
+        const p = a.kind === "itemTarget" ? obs.party[a.partySlot] : undefined;
+        return p === undefined ? Number.NEGATIVE_INFINITY : HEALS.has(id) ? -p.hp / p.stats[0] : p.level;
+      });
+    }
+    case "learnMove": {
+      // Replace the weakest move only with a stronger one.
+      const pokemon = obs.party[stage.partySlot];
+      const weakest = Math.min(...pokemon.moves.map(m => moveScore(pokemon, m.moveId)));
+      return moveScore(pokemon, stage.moveId) > weakest ? defaultPolicy(obs, legal) : { kind: "skipMove" };
+    }
+    default:
+      return defaultPolicy(obs, legal);
   }
 };
 

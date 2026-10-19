@@ -6,7 +6,7 @@
 // Environment: BATCH_PREFIX (seeds are `<prefix>-<n>`, default "batch"), BATCH_START (first n, default 0),
 // BATCH_COUNT (number of runs, default 10), BATCH_OUT (JSON lines file, default runs/games.jsonl),
 // BATCH_LEVEL (starters' level, through the harness's startingLevel override; default 0: the real game's),
-// BATCH_POLICY ("default", or "random": uniform over legal actions, seeded from the run's seed).
+// BATCH_POLICY ("default", "greedy", or "random": uniform over legal actions, seeded from the run's seed).
 // scripts/run_games.sh launches several of these processes and summarizes their files.
 //
 // A truncated run's record has the actions the policy took (issue #53), so it can be replayed whatever
@@ -21,7 +21,7 @@ import { GameManager } from "#test/framework/game-manager";
 import Phaser from "phaser";
 import { beforeAll, describe, it } from "vitest";
 import { type Action, type Decision, Driver, type StallReport } from "../driver";
-import { defaultPolicy, type Policy, randomPolicy, replayPolicy } from "../policy";
+import { defaultPolicy, greedyPolicy, type Policy, randomPolicy, replayPolicy } from "../policy";
 import { startClassicRun } from "../run";
 import { randomTeam } from "../team";
 
@@ -57,6 +57,8 @@ function policyFor(job: Job): Policy {
   switch (POLICY) {
     case "default":
       return defaultPolicy;
+    case "greedy":
+      return greedyPolicy;
     case "random":
       return randomPolicy(job.seed);
     default:
@@ -69,7 +71,7 @@ interface RunRecord {
   seed: string;
   /** The starters' level override, or 0 for the real game's. */
   level: number;
-  /** default or random (BATCH_POLICY), or replay. */
+  /** default, greedy or random (BATCH_POLICY), or replay. */
   policy: string;
   /** Species names, lead first. */
   team: string[];
