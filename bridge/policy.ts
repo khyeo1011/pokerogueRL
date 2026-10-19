@@ -17,29 +17,15 @@
 import { BattlerIndex } from "#enums/battler-index";
 import { MoveCategory } from "#enums/move-category";
 import { MysteryEncounterType } from "#enums/mystery-encounter-type";
+import { data, effectiveness } from "./damage";
 import type { Action, ActionOf } from "./decisions";
 import type { Observation, OwnPokemonObs } from "./observation";
-import { exportStaticData, type StaticData } from "./static-data";
 
 /**
  * Chooses an action for a decision from its observation (`Driver.observe()`) and legal actions
  * (`decision.legal`). Must return one of `legal`.
  */
 export type Policy = (obs: Observation, legal: readonly Action[]) => Action;
-
-let staticData: StaticData | undefined;
-
-/** The static tables, exported on first use (the game's data is loaded by then). */
-function data(): StaticData {
-  staticData ??= exportStaticData();
-  return staticData;
-}
-
-/** Type effectiveness of an attack type on a defender's types (1 for types outside the chart). */
-function effectiveness(attackType: number, defenderTypes: readonly number[]): number {
-  const chart = data().typeChart;
-  return defenderTypes.reduce((m, t) => m * (chart[attackType]?.[t] ?? 1), 1);
-}
 
 /**
  * Base power × STAB × type effectiveness of `moveId` used by `user` on a target of `targetTypes`
