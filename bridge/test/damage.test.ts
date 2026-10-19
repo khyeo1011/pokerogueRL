@@ -16,8 +16,9 @@ import { GameManager } from "#test/framework/game-manager";
 import Phaser from "phaser";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { estimateDamage, estimateEnemyStats, expectedEnemyIv } from "../damage";
-import { buildObservation, type EnemyPokemonObs, type Observation, type OwnPokemonObs } from "../observation";
+import { buildObservation } from "../observation";
 import { RevealTracker } from "../reveal-tracker";
+import { field, obs, snorlax, user } from "./built-observations";
 
 let phaserGame: Phaser.Game;
 
@@ -30,88 +31,6 @@ describe("estimateDamage on built observations", () => {
   beforeAll(() => {
     new GameManager(phaserGame);
   });
-
-  const field = (statStages = [0, 0, 0, 0, 0, 0, 0]) => ({ statStages, tags: [] });
-
-  /** A level 50 Fire type with 100 in every stat. */
-  function user(over: Partial<OwnPokemonObs> = {}): OwnPokemonObs {
-    return {
-      speciesId: SpeciesId.CHARMANDER,
-      formIndex: 0,
-      fusionSpeciesId: null,
-      fusionFormIndex: null,
-      level: 50,
-      exp: 0,
-      expToNext: 0,
-      gender: 0,
-      shiny: false,
-      nature: Nature.HARDY,
-      abilityId: AbilityId.BALL_FETCH,
-      passiveAbilityId: null,
-      teraType: PokemonType.FIRE,
-      terastallized: false,
-      types: [PokemonType.FIRE],
-      hp: 100,
-      stats: [100, 100, 100, 100, 100, 100],
-      ivs: [31, 31, 31, 31, 31, 31],
-      status: 0,
-      pokerus: false,
-      friendship: 0,
-      luck: 0,
-      moves: [],
-      items: [],
-      fieldIndex: 0,
-      field: field(),
-      ...over,
-    };
-  }
-
-  /** A level 50 Snorlax (base HP 160, Def 65, SpDef 110). */
-  function snorlax(over: Partial<EnemyPokemonObs> = {}): EnemyPokemonObs {
-    return {
-      fieldIndex: 0,
-      speciesId: SpeciesId.SNORLAX,
-      formIndex: 0,
-      fusionSpeciesId: null,
-      fusionFormIndex: null,
-      level: 50,
-      gender: 0,
-      shiny: false,
-      types: [PokemonType.NORMAL],
-      terastallized: false,
-      teraType: null,
-      hp: 1,
-      bossSegments: 0,
-      bossSegmentIndex: 0,
-      status: 0,
-      field: field(),
-      items: [],
-      revealedMoves: [],
-      revealedAbilityId: null,
-      revealedPassiveId: null,
-      ...over,
-    };
-  }
-
-  function obs(battle: Partial<Observation["battle"]> = {}, wave = 10): Observation {
-    return {
-      stage: { kind: "command", fieldIndex: 0 },
-      run: { wave, biomeId: 0, money: 0, pokeballs: [], modifiers: [] },
-      party: [],
-      battle: {
-        battleType: 0,
-        double: false,
-        turn: 1,
-        weather: null,
-        terrain: null,
-        arenaTags: [],
-        trainer: null,
-        enemyModifiers: [],
-        enemies: [],
-        ...battle,
-      },
-    };
-  }
 
   // Wild Snorlax at level 50 with IV 15.5: HP floor((320 + 15.5) / 2) + 60 = 227, Def floor(145.5 / 2) + 5 = 77.
   // Tackle (40, physical Normal, no STAB): ((22 × 40 × 100) / 77 / 50 + 2) × 0.925 = 22.99, 10.13% of 227.

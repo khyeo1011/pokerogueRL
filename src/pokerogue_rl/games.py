@@ -13,10 +13,11 @@ time between runs in a process, each process's startup, and the batch as a whole
 
 `--policy random` plays uniformly random legal actions (issue #53) instead of the default
 policy, to reach states the default policy never does. A truncated run's record keeps the
-actions taken, so scripts/replay_runs.sh can replay it.
+actions taken, so scripts/replay_runs.sh can replay it. `--policy greedy` plays the greedy
+baseline (issue #14).
 
 Usage: scripts/run_games.sh <runs> [processes] [--prefix P] [--start N] [--level L]
-       [--policy default|random] [--out DIR]
+       [--policy default|greedy|random] [--out DIR]
 """
 
 import argparse
@@ -206,7 +207,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--level", type=int, default=0, help="starters' level (0: the real game's)"
     )
-    parser.add_argument("--policy", choices=["default", "random"], default="default")
+    parser.add_argument(
+        "--policy", choices=["default", "greedy", "random"], default="default"
+    )
     parser.add_argument("--stall-seconds", type=float, default=420)
     parser.add_argument("--out", type=Path, help="default runs/games-<timestamp>")
     args = parser.parse_args(argv)

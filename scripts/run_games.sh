@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Play RUNS runs of the real game (random teams, default or random policy, mystery encounters on) in
+# Play RUNS runs of the real game (random teams, default, greedy or random policy, mystery encounters on) in
 # PROCESSES parallel processes, then merge and summarize them under runs/games-<timestamp>/.
 # Usage: scripts/run_games.sh RUNS [PROCESSES] [--prefix P] [--start N] [--level L]
-#        [--policy default|random] [--out DIR]
+#        [--policy default|greedy|random] [--out DIR]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
