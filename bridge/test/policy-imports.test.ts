@@ -1,5 +1,6 @@
 // Policies see only what a player could (issue #10): a policy module may import only the observation and
-// decision types, the public static data (bridge/static-data.ts) and the game's enums. That keeps the scene,
+// decision types, the public static data (bridge/static-data.ts), the damage estimate (bridge/damage.ts,
+// itself checked as a policy module) and the game's enums. That keeps the scene,
 // Pokémon objects and the game's damage calculation out of reach. A policy written elsewhere (e.g. in a
 // test) has the Policy type, so it gets the same two arguments. Run with scripts/test_bridge.sh.
 
@@ -8,12 +9,13 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /** The policy modules, relative to bridge/. */
-const POLICY_FILES = ["policy.ts"];
+const POLICY_FILES = ["policy.ts", "damage.ts"];
 
 /** Modules a policy may import from. Their imports reach game code, so only their types are allowed. */
 const TYPE_ONLY = new Set(["./observation", "./decisions"]);
-/** Modules a policy may import values from: plain data with no game objects in it. */
-const ALLOWED = (specifier: string) => specifier === "./static-data" || specifier.startsWith("#enums/");
+/** Modules a policy may import values from: plain data with no game objects in it, or other policy modules. */
+const ALLOWED = (specifier: string) =>
+  specifier === "./static-data" || specifier === "./damage" || specifier.startsWith("#enums/");
 /** Names that reach the game state or damage calculation without an import. */
 const FORBIDDEN_NAMES = /\b(globalScene|globalThis|window|getAttackDamage|getBaseDamage|require)\b|\bimport\s*\(/g;
 
