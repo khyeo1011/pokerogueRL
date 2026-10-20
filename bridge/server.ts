@@ -11,8 +11,9 @@
 import { createServer } from "node:net";
 import { parseArgs } from "node:util";
 
-// Must match OBS_DIM / N_ACTIONS in src/pokerogue_rl/env.py.
-const OBS_DIM = 8;
+// Must match OBS_DIM / N_ACTIONS in bridge/encoding.ts and src/pokerogue_rl/env.py.
+const OBS_DIM = 2102;
+const N_ACTIONS = 272;
 const EPISODE_LEN = 20;
 
 const { values } = parseArgs({ options: { port: { type: "string", default: "7700" } } });
@@ -34,6 +35,9 @@ const server = createServer(socket => {
         t = 0;
         return { obs: observe(t) };
       case "step":
+        if (!(Number.isInteger(msg.action) && msg.action! >= 0 && msg.action! < N_ACTIONS)) {
+          return { error: `action out of range: ${msg.action}` };
+        }
         t += 1;
         return { obs: observe(t), reward: msg.action === 0 ? 1 : 0, terminated: false, truncated: t >= EPISODE_LEN };
       default:
