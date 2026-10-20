@@ -7,10 +7,9 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-# Must match OBS_DIM in bridge/server.ts. Placeholder sizes until the real
-# observation/action encoding is designed.
-OBS_DIM = 8
-N_ACTIONS = 4
+# Must match OBS_DIM and N_ACTIONS in bridge/server.ts and bridge/encoding.ts.
+OBS_DIM = 2102
+N_ACTIONS = 272
 
 
 class PokeRogueEnv(gym.Env):
